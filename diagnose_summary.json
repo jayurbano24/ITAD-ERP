@@ -1,0 +1,120 @@
+{
+  "ticket": {
+    "id": "b8b2176a-dc27-4866-8535-8484c0911ac8",
+    "readable_id": "TK-2026-00003",
+    "expected_units": 7,
+    "received_units": 10,
+    "status": "completed"
+  },
+  "items": {
+    "count": 12,
+    "totalQuantity": 17,
+    "list": [
+      {
+        "qty": 1,
+        "received": 0,
+        "status": "PENDIENTE"
+      },
+      {
+        "qty": 1,
+        "received": 0,
+        "status": "PENDIENTE"
+      },
+      {
+        "qty": 1,
+        "received": 0,
+        "status": "PENDIENTE"
+      },
+      {
+        "qty": 1,
+        "received": 0,
+        "status": "PENDIENTE"
+      },
+      {
+        "qty": 1,
+        "received": 0,
+        "status": "PENDIENTE"
+      },
+      {
+        "qty": 1,
+        "received": 0,
+        "status": "PENDIENTE"
+      },
+      {
+        "qty": 1,
+        "received": 0,
+        "status": "PENDIENTE"
+      },
+      {
+        "qty": 1,
+        "received": 0,
+        "status": "PENDIENTE"
+      },
+      {
+        "qty": 1,
+        "received": 0,
+        "status": "PENDIENTE"
+      },
+      {
+        "qty": 1,
+        "received": 0,
+        "status": "PENDIENTE"
+      },
+      {
+        "qty": 4,
+        "received": 0,
+        "status": "COMPLETADO"
+      },
+      {
+        "qty": 3,
+        "received": 0,
+        "status": "COMPLETADO"
+      }
+    ]
+  },
+  "assets": {
+    "count": 10,
+    "list": [
+      {
+        "internal_tag": "ITAD-2026-000005",
+        "status": "received"
+      },
+      {
+        "internal_tag": "ITAD-2026-000006",
+        "status": "received"
+      },
+      {
+        "internal_tag": "ITAD-2026-000007",
+        "status": "received"
+      },
+      {
+        "internal_tag": "ITAD-2026-000008",
+        "status": "received"
+      },
+      {
+        "internal_tag": "ITAD-2026-000009",
+        "status": "received"
+      },
+      {
+        "internal_tag": "ITAD-2026-000010",
+        "status": "received"
+      },
+      {
+        "internal_tag": "ITAD-2026-000011",
+        "status": "received"
+      },
+      {
+        "internal_tag": "ITAD-2026-000012",
+        "status": "received"
+      },
+      {
+        "internal_tag": "ITAD-2026-000013",
+        "status": "received"
+      },
+      {
+        "internal_tag": "ITAD-2026-000014",
+        "status": "received"
+      }
+    ]
+  }
+}

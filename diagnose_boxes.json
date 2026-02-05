@@ -1,0 +1,47 @@
+{
+  "ticketId": "7e8acb53-eb1c-4691-896a-bc0c1d11c7d6",
+  "ticketCode": "TK-2026-00007",
+  "items": [
+    {
+      "id": "acfb886c-14e4-40ad-b3ca-ef5d3b158ef7",
+      "asset_id": null,
+      "box_number": 0,
+      "status": "COMPLETADO",
+      "brand_id": "aaf1435b-4f9d-4baf-a93d-8bdbb8643f2d",
+      "model_id": "f6bbb451-f9c7-46c9-a769-37e581674cad",
+      "product_type_id": "51e94f5c-85b5-408a-926c-6aeaa6c5da94",
+      "brand_full": null,
+      "model_full": null,
+      "product_type": null,
+      "collected_serial": null
+    },
+    {
+      "id": "49050394-fbea-4b33-aa8e-542206fc775e",
+      "asset_id": null,
+      "box_number": 10007,
+      "status": "PENDIENTE",
+      "brand_id": null,
+      "model_id": null,
+      "product_type_id": null,
+      "brand_full": null,
+      "model_full": null,
+      "product_type": "Desktop",
+      "collected_serial": "350515951136095"
+    },
+    {
+      "id": "b28b09b2-b347-499c-bdfe-022eb62ccaa4",
+      "asset_id": null,
+      "box_number": 10007,
+      "status": "PENDIENTE",
+      "brand_id": null,
+      "model_id": null,
+      "product_type_id": null,
+      "brand_full": null,
+      "model_full": null,
+      "product_type": "Desktop",
+      "collected_serial": "350563310083541"
+    }
+  ],
+  "batches": [],
+  "assetsInBatch": []
+}

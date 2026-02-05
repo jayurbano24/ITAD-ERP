@@ -1,0 +1,1114 @@
+'use client'
+
+import { useEffect, useMemo, useState, useTransition } from 'react'
+import { useRouter } from 'next/navigation'
+import { cn } from '@/lib/utils'
+import { FAILURE_TYPES } from '../constants'
+import type { LucideIcon } from 'lucide-react'
+import { Radar, ShieldCheck, Trash2, Wrench, Loader2 } from 'lucide-react'
+import type { WorkOrder } from '../actions'
+
+const parseDiagnosisDetailsFromText = (text?: string | null) => {
+  if (!text) return []
+  const marker = 'Fallas tabuladas:'
+  const markerIndex = text.indexOf(marker)
+  if (markerIndex === -1) return []
+  const after = text.slice(markerIndex + marker.length).trim()
+  if (!after) return []
+  return after.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => {
+    const parts = line.split('—').map((part) => part.trim())
+    if (parts.length > 1) {
+      return { code: parts[0], description: parts.slice(1).join(' — ') }
+    }
+    return { code: parts[0], description: '' }
+  })
+}
+
+type WorkshopClassifications = {
+  rec?: string
+  c?: string
+  f?: string
+}
+
+const getWorkshopClassifications = (asset?: WorkOrder['asset']): WorkshopClassifications => {
+  const specs = asset?.specifications
+  if (!specs || typeof specs !== 'object') return {}
+  const rawClassifications = (specs as Record<string, unknown>).workshop_classifications
+  if (!rawClassifications || typeof rawClassifications !== 'object') return {}
+  const cls = rawClassifications as Record<string, unknown>
+  return {
+    rec: typeof cls.rec === 'string' ? cls.rec : undefined,
+    c: typeof cls.c === 'string' ? cls.c : undefined,
+    f: typeof cls.f === 'string' ? cls.f : undefined
+  }
+}
+
+const formatClassificationsLabel = (asset?: WorkOrder['asset']) => {
+  const { rec, c, f } = getWorkshopClassifications(asset)
+  const parts: string[] = []
+  if (rec) parts.push(`REC: ${rec}`)
+  if (f) parts.push(`F: ${f}`)
+  if (c) parts.push(`C: ${c}`)
+  if (parts.length === 0) return 'Primer Ingreso'
+  return parts.join(' | ')
+}
+
+type StageTab = {
+  key: 'diagnostico' | 'reparacion' | 'control_calidad'
+  label: string
+  statuses: string[]
+  Icon: LucideIcon
+}
+
+const tabs: StageTab[] = [
+  {
+    key: 'diagnostico',
+    label: 'Diagnóstico',
+    statuses: ['open', 'waiting_quote', 'quote_rejected'],
+    Icon: Radar
+  },
+  {
+    key: 'reparacion',
+    label: 'Reparación',
+    statuses: ['in_progress', 'waiting_parts', 'waiting_seedstock', 'quote_approved'],
+    Icon: Wrench
+  },
+  {
+    key: 'control_calidad',
+    label: 'Control de Calidad',
+    statuses: ['qc_pending', 'qc_passed', 'qc_failed'],
+    Icon: ShieldCheck
+  }
+]
+
+const statusLabels: Record<string, string> = {
+  open: 'Abierta',
+  waiting_quote: 'Cotizando',
+  quote_rejected: 'Cotización rechazada',
+  in_progress: 'En reparación',
+  waiting_parts: 'Esperando piezas',
+  waiting_seedstock: 'Seedstock',
+  quote_approved: 'Cotización aprobada',
+  qc_pending: 'QC pendiente',
+  qc_passed: 'QC aprobado',
+  qc_failed: 'QC fallido'
+}
+
+const diagnosisActions = [
+  { label: 'Diagnóstico', key: 'diagnostico' },
+  { label: 'Hardvesting', key: 'hardvesting' },
+  { label: 'Borrado', key: 'borrado' },
+  { label: 'Destrucción', key: 'destruccion' }
+]
+
+const statusChips = [
+  { label: 'Garantía', key: 'warranty' },
+  { label: 'Fuera de garantía', key: 'out_of_warranty' },
+  { label: 'Irreparable', key: 'irreparable' },
+  { label: 'Nota de crédito', key: 'credit' },
+  { label: 'Para escalar', key: 'escalate' }
+]
+
+const repairModes = ['Partes', 'Software', 'Cambio', 'No Reparado', 'Nota de Crédito']
+const repairOptions = ['Reparación de pantalla', 'Reemplazo de conector', 'Actualización de software', 'Reemplazo de batería']
+const partsSourceOptions = ['Good Warehouse', 'Harvesting Warehouse']
+const qcChecklist = ['Diagnóstico', 'Partes Libres', 'Manual de pruebas', 'Evidencia de QC']
+const repairLevelMap: Record<string, string> = {
+  Partes: 'L2',
+  Software: 'L1',
+  Cambio: 'L3',
+  'No Reparado': 'L0',
+  'Nota de Crédito': 'L0'
+}
+
+export default function TallerStageDashboard({ workOrders }: { workOrders: WorkOrder[] }) {
+  const [activeTab, setActiveTab] = useState(tabs[0].key)
+  const filteredOrders = useMemo(() => {
+    const currentTab = tabs.find((tab) => tab.key === activeTab)
+    if (!currentTab) return []
+    return workOrders.filter((wo) => currentTab.statuses.includes(wo.status))
+  }, [activeTab, workOrders])
+  const stageCounts = useMemo(
+    () =>
+      tabs.reduce((acc, tab) => {
+        acc[tab.key] = workOrders.filter((wo) => tab.statuses.includes(wo.status)).length
+        return acc
+      }, {} as Record<string, number>),
+    [workOrders]
+  )
+
+  const [selectedId, setSelectedId] = useState<string | null>(null)
+  const [selectedFailure, setSelectedFailure] = useState('')
+  const [selectedRepairMode, setSelectedRepairMode] = useState(repairModes[0])
+  const selectedFailureLabel = selectedFailure
+    ? FAILURE_TYPES.find((failure) => failure.value === selectedFailure)?.label ?? ''
+    : ''
+  const [selectedRepairOption, setSelectedRepairOption] = useState(repairOptions[0])
+  const [selectedPartsSource, setSelectedPartsSource] = useState(partsSourceOptions[0])
+  const [selectedDiagnosisAction, setSelectedDiagnosisAction] = useState(diagnosisActions[0].key)
+  const [diagnosisDetails, setDiagnosisDetails] = useState<
+    { code: string; description: string }[]
+  >([])
+  const [repairsList, setRepairsList] = useState<
+    { repair: string; code: string; level: string }[]
+  >([])
+  const [diagnosisComment, setDiagnosisComment] = useState('')
+  const [partsQuery, setPartsQuery] = useState('')
+  const [partsList, _setPartsList] = useState<
+    { sku: string; description: string; quantity: number; dispatched: string }[]
+  >([])
+  const [softwareVersionIn, setSoftwareVersionIn] = useState('')
+  const [softwareVersionOut, setSoftwareVersionOut] = useState('')
+  const [softwareRepairNote, setSoftwareRepairNote] = useState('Actualización de software')
+  const router = useRouter()
+  const [isPending, startTransition] = useTransition()
+  const [sendError, setSendError] = useState<string | null>(null)
+  const [sendSuccess, setSendSuccess] = useState<string | null>(null)
+  const [repairActionMessage, setRepairActionMessage] = useState<string | null>(null)
+
+  const handleSendToRepair = () => {
+    if (!selectedOrder) {
+      setSendError('Selecciona una orden para continuar')
+      return
+    }
+
+    setSendError(null)
+    setSendSuccess(null)
+
+    const failureMeta = FAILURE_TYPES.find((failure) => failure.value === selectedFailure)
+    const actionLabel = diagnosisActions.find((action) => action.key === selectedDiagnosisAction)?.label
+    const trimmedComment = diagnosisComment.trim()
+    const detailPayload = diagnosisDetails.map(({ code, description }) => ({
+      code,
+      description,
+    }))
+
+    const payload: Record<string, unknown> = {
+      workOrderId: selectedOrder.id,
+      diagnosisComment: trimmedComment || undefined,
+    }
+
+    if (detailPayload.length > 0) {
+      payload.diagnosisDetails = detailPayload
+    }
+
+    if (selectedFailure) {
+      payload.failureType = selectedFailure
+      if (failureMeta?.category) {
+        payload.failureCategory = failureMeta.category
+      }
+    }
+
+    if (actionLabel) {
+      payload.diagnosisActionLabel = actionLabel
+    }
+
+    startTransition(async () => {
+      try {
+        const response = await fetch('/api/taller/diagnostics/send-to-repair', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        })
+        const body = await response.json()
+
+        if (!response.ok) {
+          setSendError(body?.error || 'No se pudo enviar el diagnóstico')
+          return
+        }
+
+        setSendSuccess('Diagnóstico enviado a reparación')
+        setDiagnosisDetails(detailPayload)
+        setSelectedFailure('')
+        setSelectedDiagnosisAction(diagnosisActions[0].key)
+        router.refresh()
+      } catch (error) {
+        setSendError(error instanceof Error ? error.message : 'Error al enviar el diagnóstico')
+      }
+    })
+  }
+
+  const handleAddRepair = () => {
+    if (!selectedRepairOption) return
+    const code = deriveRepairCode(selectedRepairOption)
+    const level = repairLevelMap[selectedRepairMode] ?? 'L0'
+    setRepairsList((prev) => [
+      ...prev,
+      {
+        repair: selectedRepairOption,
+        code,
+        level
+      }
+    ])
+  }
+  const handleRemoveRepair = (index: number) => {
+    setRepairsList((prev) => prev.filter((_, idx) => idx !== index))
+  }
+  const handleSaveRepair = () => {
+    if (!selectedOrder) {
+      setRepairActionMessage('Selecciona una orden para guardar la reparación.')
+      return
+    }
+    setRepairActionMessage('Reparación guardada correctamente.')
+  }
+  const handleSendToQuality = () => {
+    if (!selectedOrder) {
+      setRepairActionMessage('Selecciona una orden antes de enviar a control de calidad.')
+      return
+    }
+    if (repairsList.length === 0) {
+      setRepairActionMessage('Agrega al menos un tipo de reparación antes de enviar la orden.')
+      return
+    }
+    setRepairActionMessage('Orden enviada a Control de Calidad.')
+  }
+
+  useEffect(() => {
+    if (filteredOrders.length === 0) {
+      setSelectedId(null)
+      return
+    }
+    if (filteredOrders.some((wo) => wo.id === selectedId)) {
+      return
+    }
+    setSelectedId(filteredOrders[0].id)
+  }, [filteredOrders, selectedId])
+
+  const selectedOrder = filteredOrders.find((wo) => wo.id === selectedId) ?? filteredOrders[0] ?? null
+
+  useEffect(() => {
+    setSendError(null)
+    setSendSuccess(null)
+    setRepairActionMessage(null)
+  }, [selectedOrder?.id])
+
+  const assetClassifications = useMemo(() => getWorkshopClassifications(selectedOrder?.asset), [selectedOrder?.asset])
+  const classificationLabel = useMemo(() => formatClassificationsLabel(selectedOrder?.asset), [selectedOrder?.asset])
+  const persistedDiagnosisDetails = useMemo(
+    () => parseDiagnosisDetailsFromText(selectedOrder?.diagnosis),
+    [selectedOrder?.diagnosis]
+  )
+
+  useEffect(() => {
+    setDiagnosisComment(selectedOrder?.diagnosis ?? '')
+  }, [selectedOrder])
+
+  const workOrderSequenceMap = useMemo(() => {
+    return [...workOrders]
+      .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime())
+      .reduce<Record<string, number>>((acc, wo, index) => {
+        acc[wo.id] = index + 1
+        return acc
+      }, {})
+  }, [workOrders])
+
+  const stripKnownPrefix = (value?: string | null) => {
+    if (!value) return null
+    return value.replace(/^(WO-|OS-)/i, '')
+  }
+
+  const extractNumericComponent = (value?: string | null) => {
+    const cleaned = stripKnownPrefix(value)
+    if (!cleaned) return null
+    const match = cleaned.match(/\d+/)
+    if (!match) return null
+    return String(Number(match[0]))
+  }
+
+  const formatWorkOrderId = (order?: WorkOrder | null) => {
+    if (!order) {
+      return '—'
+    }
+    const numericFromNumber = extractNumericComponent(order.work_order_number)
+    if (numericFromNumber) {
+      return numericFromNumber
+    }
+    if (order.human_id !== undefined && order.human_id !== null) {
+      return String(order.human_id)
+    }
+    const sequenceFallback = workOrderSequenceMap[order.id]
+    if (sequenceFallback) {
+      return String(sequenceFallback)
+    }
+    return stripKnownPrefix(order.work_order_number) || '—'
+  }
+
+  const deriveRepairCode = (label: string) => {
+    const matches = label.match(/\b\w/g)
+    if (!matches) return 'WX00'
+    return matches.slice(0, 3).join('').toUpperCase()
+  }
+
+  const repairDiagnosisDetails = diagnosisDetails.length > 0 ? diagnosisDetails : persistedDiagnosisDetails
+  const hasEditableDetails = diagnosisDetails.length > 0
+
+  const chipsState = useMemo(() => {
+    if (!selectedOrder) {
+      return {}
+    }
+    return {
+      warranty: selectedOrder.warranty_status === 'in_warranty',
+      out_of_warranty: selectedOrder.warranty_status === 'out_of_warranty',
+      irreparable: selectedOrder.is_irreparable,
+      credit: selectedOrder.quote_status === 'rejected',
+      escalate: ['waiting_quote', 'waiting_parts'].includes(selectedOrder.status)
+    }
+  }, [selectedOrder])
+
+  const isDiagnosticoStage = activeTab === 'diagnostico'
+  const isRepairStage = activeTab === 'reparacion'
+  const repairStageCardClasses = cn(
+    'rounded-2xl border p-6 space-y-4 transition',
+    isRepairStage
+      ? 'bg-white text-slate-900 border-slate-200 shadow-[0_25px_50px_rgba(15,23,42,0.15)]'
+      : 'bg-surface-900 text-surface-300 border-surface-700 shadow-none'
+  )
+
+  const equipoFields = useMemo(() => {
+    if (!selectedOrder) return []
+    const asset = selectedOrder.asset
+    const displayId = formatWorkOrderId(selectedOrder)
+    const tkValue = asset?.batch_code ?? 'Sin lote'
+    return [
+      { label: 'ID', value: displayId, highlight: true },
+      { label: 'TK', value: tkValue ?? 'Sin TK' },
+      { label: 'Marca', value: asset?.manufacturer ?? 'Sin marca' },
+      { label: 'Modelo', value: asset?.model ?? 'Sin modelo' },
+      { label: 'Tipos de Producto', value: asset?.asset_type ?? 'Sin tipo' },
+      { label: 'Color', value: asset?.color ?? 'Sin color' },
+      { label: 'Series', value: asset?.serial_number ?? 'Sin serie' }
+    ]
+  }, [selectedOrder])
+
+  const repairDataFields = selectedOrder
+    ? [
+        { label: 'ID', value: formatWorkOrderId(selectedOrder), highlight: true },
+        { label: 'TK', value: selectedOrder.asset?.batch_code ?? 'Sin lote', highlight: true },
+        { label: 'Marca', value: selectedOrder.asset?.manufacturer ?? 'Sin marca' },
+        { label: 'Modelo', value: selectedOrder.asset?.model ?? 'Sin modelo' },
+        { label: 'Tipo de producto', value: selectedOrder.asset?.asset_type ?? 'Sin tipo' },
+        { label: 'Color', value: selectedOrder.asset?.color ?? 'Sin color' }
+      ]
+    : []
+
+  const renderEquipoFields = (emptyMessage: string) => {
+    if (!selectedOrder) {
+      return <p className="text-sm text-surface-500">{emptyMessage}</p>
+    }
+
+    return (
+      <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3 text-sm text-surface-400">
+        {equipoFields.map((field) => (
+          <div key={field.label}>
+            <p className="text-[11px] uppercase tracking-[0.4em] text-surface-500">{field.label}</p>
+            <p className={cn(
+              "font-medium",
+              field.highlight
+                ? "text-2xl text-emerald-400 font-bold"
+                : "text-white"
+            )}>
+              {field.value}
+            </p>
+          </div>
+        ))}
+      </div>
+    )
+  };
+
+  const diagnosticoActionsSection = selectedRepairMode !== 'Software' ? (
+    <section className="rounded-2xl border border-surface-700 bg-surface-900 p-6 space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-xs uppercase tracking-[0.3em] text-surface-500">Diagnóstico y Acciones</p>
+          <h3 className="text-lg font-semibold text-white">Registrar diagnóstico</h3>
+        </div>
+        <button className="text-xs text-brand-400">Evidencia</button>
+      </div>
+      <div className="flex flex-wrap gap-2">
+        {diagnosisActions.map((chip) => {
+          const isActive = selectedDiagnosisAction === chip.key
+          return (
+            <button
+              key={chip.key}
+              type="button"
+              aria-pressed={isActive}
+              onClick={() => setSelectedDiagnosisAction(chip.key)}
+              className={cn(
+                'px-4 py-1 rounded-full text-xs font-semibold transition-all focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2',
+                isActive
+                  ? 'bg-gradient-to-r from-fuchsia-500 to-pink-500 text-white shadow-[0_10px_30px_rgba(236,72,153,0.35)] border-transparent'
+                  : 'border border-surface-700 bg-surface-850 text-surface-400 hover:border-surface-600'
+              )}
+            >
+              {chip.label}
+            </button>
+          )
+        })}
+      </div>
+      <div className="space-y-3">
+        <label className="text-xs uppercase tracking-[0.3em] text-surface-500">Diagnóstico / Falla Tabulada</label>
+        <div className="flex gap-3">
+          <select
+            value={selectedFailure}
+            onChange={(event) => setSelectedFailure(event.target.value)}
+            className="flex-1 rounded-2xl border border-surface-700 bg-surface-900 px-3 py-2 text-sm text-surface-200 outline-none focus:border-brand-500"
+          >
+            <option value="">Seleccionar diagnóstico...</option>
+            {FAILURE_TYPES.map((failure) => (
+              <option key={failure.value} value={failure.value}>
+                {failure.label}
+              </option>
+            ))}
+          </select>
+          <button
+            className="rounded-2xl border border-surface-700 px-5 py-2 text-xs font-semibold text-surface-200 transition hover:border-surface-500"
+            type="button"
+            onClick={() => {
+              if (!selectedFailure) return
+              const selected = FAILURE_TYPES.find((failure) => failure.value === selectedFailure)
+              if (!selected) return
+              setDiagnosisDetails((prev) => [
+                ...prev,
+                {
+                  code: selected.value,
+                  description: selected.label,
+                }
+              ])
+            }}
+          >
+            Añadir
+          </button>
+        </div>
+      </div>
+      {diagnosisDetails.length > 0 && (
+        <div className="rounded-2xl border border-surface-700 bg-surface-900 p-4 space-y-3">
+          <table className="min-w-full text-sm text-surface-300">
+            <thead>
+              <tr className="text-[11px] uppercase tracking-[0.3em] text-surface-500">
+                <th className="px-3 py-2 text-left">Código</th>
+                <th className="px-3 py-2 text-left">Descripción</th>
+                <th className="px-3 py-2 text-left">Acciones</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-surface-800">
+              {diagnosisDetails.map((detail, index) => (
+                <tr key={`${detail.code}-${index}`}>
+                  <td className="px-3 py-2 font-mono text-surface-200">{detail.code}</td>
+                  <td className="px-3 py-2">{detail.description}</td>
+                  <td className="px-3 py-2">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setDiagnosisDetails((prev) => prev.filter((_, idx) => idx !== index))
+                      }
+                      className="rounded-full border border-transparent bg-surface-800 p-1 text-surface-300 transition hover:border-red-400 hover:text-red-400"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <textarea
+        className="w-full rounded-2xl border border-surface-700 bg-surface-900 px-4 py-3 text-sm text-surface-300"
+        placeholder="Comentarios del diagnóstico"
+        value={diagnosisComment}
+        onChange={(event) => setDiagnosisComment(event.target.value)}
+      />
+      <div className="space-y-2">
+        {(sendError || sendSuccess) && (
+          <div aria-live="polite" className="space-y-1 text-xs text-surface-400">
+            {sendError && <p className="text-red-400">{sendError}</p>}
+            {sendSuccess && <p className="text-emerald-400">{sendSuccess}</p>}
+          </div>
+        )}
+        <div className="flex items-center justify-end">
+          <button
+            type="button"
+            onClick={handleSendToRepair}
+            disabled={isPending || !selectedOrder}
+            className="rounded-2xl bg-emerald-500 px-5 py-2 text-sm font-semibold text-white transition hover:bg-emerald-400 disabled:opacity-60 disabled:cursor-not-allowed"
+          >
+            {isPending ? (
+              <span className="flex items-center gap-2">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Enviando...
+              </span>
+            ) : (
+              'Enviar a Reparación'
+            )}
+          </button>
+        </div>
+      </div>
+    </section>
+  ) : null;
+
+  const partesCards = (
+    <div className="flex flex-col gap-4">
+      <section className="space-y-5 rounded-2xl border border-slate-200 bg-white p-6 shadow-[0_20px_45px_rgba(15,23,42,0.08)]">
+        <div className="flex items-center justify-between">
+          <p className="text-xs uppercase tracking-[0.3em] text-slate-500">Reparación</p>
+          <span className="text-xs text-slate-400">Modo activo: Partes</span>
+        </div>
+        <label className="text-[11px] uppercase tracking-[0.3em] text-slate-500">Tipo de reparación</label>
+        <div className="flex flex-wrap items-center gap-3">
+          <select
+            value={selectedRepairOption}
+            onChange={(event) => setSelectedRepairOption(event.target.value)}
+            className="flex-1 min-w-[220px] rounded-full border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 transition focus:border-emerald-500 focus-visible:outline-none"
+          >
+            {repairOptions.map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={handleAddRepair}
+            className="flex items-center gap-2 rounded-full bg-emerald-600 px-5 py-3 text-sm font-semibold text-white transition hover:bg-emerald-500"
+          >
+            <span className="text-[18px] font-bold leading-none">+</span>
+            Agregar
+          </button>
+        </div>
+        <div className="overflow-hidden rounded-2xl border border-slate-100 bg-slate-50">
+          <table className="min-w-full text-left text-sm text-slate-600">
+            <thead>
+              <tr className="text-[11px] uppercase tracking-[0.3em] text-slate-400">
+                <th className="px-4 py-3">Reparación</th>
+                <th className="px-4 py-3">Código</th>
+                <th className="px-4 py-3">Nivel</th>
+                <th className="px-4 py-3">Acción</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-200">
+              {repairsList.length === 0 ? (
+                <tr>
+                  <td colSpan={4} className="px-4 py-6 text-center text-slate-400">
+                    Añada un tipo de reparación.
+                  </td>
+                </tr>
+              ) : (
+                repairsList.map((repair, index) => (
+                  <tr key={`${repair.code}-${index}`}>
+                    <td className="px-4 py-3 font-medium text-slate-700">{repair.repair}</td>
+                    <td className="px-4 py-3 font-mono text-slate-500">{repair.code}</td>
+                    <td className="px-4 py-3 text-slate-500">{repair.level}</td>
+                    <td className="px-4 py-3">
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveRepair(index)}
+                        className="text-xs font-semibold text-rose-500 underline-offset-2 hover:text-rose-400"
+                      >
+                        Eliminar
+                      </button>
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section className="space-y-5 rounded-2xl border border-slate-200 bg-white p-6 shadow-[0_20px_45px_rgba(15,23,42,0.08)]">
+        <div className="flex items-center justify-between">
+          <p className="text-xs uppercase tracking-[0.3em] text-slate-500">Partes</p>
+          <div className="flex items-center gap-3 text-xs text-slate-500">
+            {partsSourceOptions.map((option) => (
+              <label key={option} className="flex items-center gap-1">
+                <input
+                  type="radio"
+                  name="parts-source"
+                  value={option}
+                  checked={selectedPartsSource === option}
+                  onChange={(event) => setSelectedPartsSource(event.target.value)}
+                  className="h-4 w-4 accent-emerald-500"
+                />
+                {option}
+              </label>
+            ))}
+          </div>
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <input
+            type="text"
+            value={partsQuery}
+            onChange={(event) => setPartsQuery(event.target.value)}
+            placeholder="Buscar SKU..."
+            className="flex-1 min-w-[220px] rounded-full border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700 focus:border-emerald-500 focus-visible:outline-none"
+          />
+          <button
+            type="button"
+            className="rounded-full border border-slate-200 bg-slate-900 px-5 py-3 text-xs font-semibold text-white transition hover:bg-slate-800"
+          >
+            Buscar
+          </button>
+        </div>
+        <div className="overflow-hidden rounded-2xl border border-slate-100 bg-slate-50">
+          <table className="min-w-full text-left text-sm text-slate-600">
+            <thead>
+              <tr className="text-[11px] uppercase tracking-[0.3em] text-slate-400">
+                <th className="px-4 py-3">SKU</th>
+                <th className="px-4 py-3">Descripción</th>
+                <th className="px-4 py-3">Cantidad</th>
+                <th className="px-4 py-3">Despachado</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-200">
+              {partsList.length === 0 ? (
+                <tr>
+                  <td colSpan={4} className="px-4 py-6 text-center text-slate-400">
+                    Añada una parte a la lista.
+                  </td>
+                </tr>
+              ) : (
+                partsList.map((part) => (
+                  <tr key={part.sku}>
+                    <td className="px-4 py-3 font-mono text-slate-500">{part.sku}</td>
+                    <td className="px-4 py-3 text-slate-600">{part.description}</td>
+                    <td className="px-4 py-3 text-slate-600">{part.quantity}</td>
+                    <td className="px-4 py-3 text-slate-600">{part.dispatched}</td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+        <div className="flex justify-end">
+          <button
+            type="button"
+            className="rounded-full bg-emerald-600 px-6 py-3 text-xs font-semibold text-white transition hover:bg-emerald-500"
+          >
+            Solicitar partidas
+          </button>
+        </div>
+      </section>
+    </div>
+  );
+
+  return (
+    <div className="rounded-3xl border border-surface-800 bg-surface-900/40 p-6">
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-wrap gap-2">
+            {tabs.map((tab) => (
+              <button
+                key={tab.key}
+                type="button"
+                onClick={() => setActiveTab(tab.key)}
+                aria-pressed={activeTab === tab.key}
+                className={cn(
+                  'px-4 py-2 rounded-full text-sm font-medium transition-colors border flex flex-col items-center gap-1',
+                  activeTab === tab.key
+                    ? 'bg-brand-500/20 border-brand-500 text-brand-400'
+                    : 'bg-surface-900 border-surface-800 text-surface-400 hover:border-surface-700 hover:text-white'
+                )}
+              >
+                <span className="flex items-center gap-2">
+                  <tab.Icon className="h-4 w-4" />
+                  {tab.label}
+                </span>
+                <span className="text-[11px] uppercase text-surface-500">
+                  {stageCounts[tab.key] ?? 0}
+                </span>
+              </button>
+            ))}
+          </div>
+          <div className="border border-dashed border-surface-800" />
+          <div className="grid lg:grid-cols-[minmax(0,360px)_minmax(0,1fr)] gap-6">
+            <div>
+              <div className="rounded-2xl border border-surface-700 bg-surface-900 p-5 space-y-3">
+                <p className="text-xs uppercase tracking-[0.3em] text-surface-500">En {tabs.find((tab) => tab.key === activeTab)?.label}</p>
+                {filteredOrders.length === 0 ? (
+                  <p className="text-sm text-surface-400">No hay órdenes en esta etapa.</p>
+                ) : isDiagnosticoStage ? (
+                  <div className="rounded-2xl border border-surface-800 bg-surface-950 p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-surface-500 tracking-[0.3em]">Listado</span>
+                      <span className="text-[11px] text-surface-500">{filteredOrders.length} OS</span>
+                    </div>
+                    <div className="max-h-[380px] overflow-y-auto">
+                      <table className="w-full text-sm text-surface-400">
+                        <thead>
+                          <tr className="text-[11px] uppercase tracking-[0.3em] text-surface-500">
+                            <th className="pb-2 text-left">ID</th>
+                            <th className="pb-2 text-left">Equipo</th>
+                            <th className="pb-2 text-left">Lote</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-surface-800">
+                          {filteredOrders.map((wo) => (
+                            <tr
+                              key={wo.id}
+                              onClick={() => setSelectedId(wo.id)}
+                              className={cn(
+                                'cursor-pointer transition-colors',
+                                selectedOrder?.id === wo.id
+                                  ? 'bg-emerald-500/10 text-white'
+                                  : 'text-surface-400 hover:text-white hover:bg-surface-800/40'
+                              )}
+                            >
+                              <td className="py-2 font-bold text-emerald-400">{formatWorkOrderId(wo)}</td>
+                              <td className="py-2 text-sm">{wo.asset?.manufacturer ?? 'Sin marca'} {wo.asset?.model ?? ''}</td>
+                              <td className="py-2 text-xs font-mono text-blue-400">{wo.asset?.batch_code ?? '—'}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-3 max-h-[480px] overflow-y-auto pr-1">
+                    {filteredOrders.map((wo) => (
+                      <button
+                        key={wo.id}
+                        type="button"
+                        onClick={() => setSelectedId(wo.id)}
+                        className={cn(
+                          'w-full text-left rounded-2xl border px-4 py-3 transition-colors',
+                          selectedOrder?.id === wo.id
+                            ? 'border-brand-500 bg-emerald-500/10'
+                            : 'border-transparent bg-surface-900 hover:border-surface-700'
+                        )}
+                      >
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <p className="text-xs text-surface-400 uppercase tracking-[0.3em]">ID</p>
+                            <p className="font-bold text-emerald-400 text-2xl">{formatWorkOrderId(wo)}</p>
+                          </div>
+                          {wo.asset?.batch_code && (
+                            <span className="text-xs font-mono text-blue-400 bg-blue-500/10 px-2 py-1 rounded">
+                              {wo.asset.batch_code}
+                            </span>
+                          )}
+                        </div>
+                        <p className="text-sm text-white mt-1">
+                          {wo.asset?.manufacturer ?? 'Sin marca'} {wo.asset?.model ?? ''}
+                        </p>
+                        <p className="text-xs text-surface-500">{wo.asset?.asset_type ?? 'Sin tipo'}</p>
+                        <div className="flex items-center justify-between text-[11px] text-surface-500 mt-2">
+                          <span>{statusLabels[wo.status] ?? 'En proceso'}</span>
+                          <span>{wo.priority?.toUpperCase()}</span>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              {isDiagnosticoStage ? (
+                <>
+                  <section className="rounded-2xl border border-surface-700 bg-surface-900 p-6 space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.3em] text-surface-500">Datos del equipo</p>
+                        <h3 className="text-lg font-semibold text-white">{selectedOrder ? 'En Diagnóstico' : 'Selecciona un OS'}</h3>
+                      </div>
+                      <div className="text-right text-xs text-surface-400 space-y-0.5">
+                        <p>Clasificación: {classificationLabel}</p>
+                        <p>REC: {assetClassifications.rec ?? '—'}</p>
+                        <p>C: {assetClassifications.c ?? '—'}</p>
+                        <p>F: {assetClassifications.f ?? '—'}</p>
+                        <p>Sucursal: Taller Central</p>
+                      </div>
+                    </div>
+                    {renderEquipoFields('En el área de diagnóstico se muestran los datos de la orden seleccionada.')}
+                    <div className="rounded-2xl border border-surface-800 bg-surface-900 p-4 text-sm text-surface-400">
+                      {selectedOrder?.reported_issue ?? 'Sin reporte del cliente'}
+                    </div>
+                  </section>
+
+                  {diagnosticoActionsSection}
+                </>
+              ) : isRepairStage ? (
+                <>
+                  <section className="rounded-2xl border border-surface-700 bg-surface-900 p-4">
+                    <div className="flex flex-wrap items-start justify-between gap-4">
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.4em] text-surface-500">DATOS DEL EQUIPO</p>
+                        <h3 className="text-lg font-semibold text-white">{selectedOrder ? 'Revisión de reparación' : 'Selecciona un OS'}</h3>
+                      </div>
+                      <div className="text-right text-xs text-surface-400 space-y-1 min-w-[180px]">
+                        <p className="text-[11px] uppercase tracking-[0.4em] text-surface-500">Clasificación</p>
+                        <p className="text-sm text-emerald-200 break-words">{classificationLabel}</p>
+                        <p className="text-[11px] uppercase tracking-[0.4em] text-surface-500">Sucursal</p>
+                        <p className="text-sm text-surface-200">Taller Central</p>
+                      </div>
+                    </div>
+                    {selectedOrder ? (
+                      <div className="mt-3 grid gap-3 text-surface-400 sm:grid-cols-2 lg:grid-cols-3">
+                        {repairDataFields.map((field) => (
+                          <div key={field.label} className="space-y-1">
+                            <p className="text-[11px] uppercase tracking-[0.4em] text-surface-500">{field.label}</p>
+                            <p
+                              className={cn(
+                                'font-semibold leading-tight',
+                                field.highlight ? 'text-3xl text-emerald-400' : 'text-white'
+                              )}
+                            >
+                              {field.value}
+                            </p>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="text-sm text-surface-500 mt-4">Selecciona una orden para ver los datos del equipo.</p>
+                    )}
+                    {selectedOrder && (
+                      <div className="mt-2 text-sm text-surface-400">
+                        <p className="text-[11px] uppercase tracking-[0.4em] text-surface-500">Series</p>
+                        <p className="text-surface-200">
+                          {selectedOrder.asset?.serial_number ?? 'Sin serie'}
+                        </p>
+                      </div>
+                    )}
+                    {selectedOrder && (
+                      <div className="mt-4 grid sm:grid-cols-2 gap-3 text-sm text-surface-400">
+                        {selectedOrder.warranty_status && selectedOrder.warranty_status !== 'pending_validation' && (
+                          <div>
+                            <p className="text-[11px] uppercase tracking-[0.4em] text-surface-500">Garantía</p>
+                            <p className="text-white font-medium">{selectedOrder.warranty_status}</p>
+                          </div>
+                        )}
+                        {selectedOrder.technician?.full_name && (
+                          <div>
+                            <p className="text-[11px] uppercase tracking-[0.4em] text-surface-500">Técnico</p>
+                            <p className="text-white font-medium">{selectedOrder.technician.full_name}</p>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    <div className="rounded-2xl border border-surface-800 bg-surface-900 p-4 text-sm text-surface-400 mt-4">
+                      <p className="font-semibold text-surface-200">Falla reportada</p>
+                      <p>{selectedOrder?.reported_issue ?? 'Sin reporte del cliente'}</p>
+                    </div>
+                  </section>
+
+                  <section className="rounded-2xl border border-surface-700 bg-surface-900 p-6 space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.3em] text-surface-500">Diagnóstico Realizado</p>
+                        <h3 className="text-lg font-semibold text-white">
+                          {selectedFailure ? FAILURE_TYPES.find((failure) => failure.value === selectedFailure)?.label : 'DIAGNOSTICADO'}
+                        </h3>
+                      </div>
+                      <button className="text-xs text-emerald-400">Imprimir Ticket</button>
+                    </div>
+                    <div className="rounded-2xl border border-surface-800 bg-surface-950 p-4 text-sm text-surface-300">
+                      <div className="overflow-hidden rounded-xl border border-surface-800 bg-surface-950">
+                        <table className="min-w-full text-left text-sm text-surface-300">
+                          <thead>
+                            <tr className="text-[11px] uppercase tracking-[0.3em] text-surface-500">
+                              <th className="px-3 py-2">Código</th>
+                              <th className="px-3 py-2">Descripción</th>
+                              <th className="px-3 py-2">Acciones</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-surface-800">
+                            {repairDiagnosisDetails.length === 0 ? (
+                              <tr>
+                                <td colSpan={3} className="px-3 py-4 text-center text-surface-500">
+                                  No hay detalles registrados.
+                                </td>
+                              </tr>
+                            ) : (
+                              repairDiagnosisDetails.map((detail, index) => (
+                                <tr key={`${detail.code}-${index}`}>
+                                  <td className="px-3 py-2 font-mono text-surface-200">{detail.code}</td>
+                                  <td className="px-3 py-2 text-surface-200">{detail.description}</td>
+                                  <td className="px-3 py-2">
+                                    {hasEditableDetails ? (
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          setDiagnosisDetails((prev) => prev.filter((_, idx) => idx !== index))
+                                        }
+                                        className="flex items-center justify-center rounded-full border border-transparent bg-surface-800 p-1 text-surface-300 transition hover:border-red-400 hover:text-red-400"
+                                      >
+                                        <Trash2 className="h-4 w-4" />
+                                      </button>
+                                    ) : (
+                                      <span className="text-xs uppercase tracking-[0.3em] text-surface-500">—</span>
+                                    )}
+                                  </td>
+                                </tr>
+                              ))
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </section>
+
+                  <section className={repairStageCardClasses}>
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <p className="text-2xl font-semibold uppercase tracking-[0.3em] text-slate-900">Reparación</p>
+                      <span className="text-xs uppercase tracking-[0.4em] text-slate-500">Modo activo: {selectedRepairMode}</span>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {repairModes.map((mode) => (
+                        <button
+                          key={mode}
+                          type="button"
+                          onClick={() => setSelectedRepairMode(mode)}
+                          className={cn(
+                            'px-4 py-1 rounded-full text-xs font-semibold border transition-colors whitespace-nowrap',
+                            isRepairStage
+                              ? selectedRepairMode === mode
+                                ? 'border-emerald-500 bg-emerald-500 text-white shadow-[0_8px_25px_rgba(16,185,129,0.35)]'
+                                : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'
+                              : selectedRepairMode === mode
+                                ? 'border-brand-500 bg-brand-500/20 text-brand-200'
+                                : 'border-transparent bg-surface-800 text-surface-400 hover:border-surface-700'
+                          )}
+                        >
+                          {mode}
+                        </button>
+                      ))}
+                    </div>
+                    {selectedRepairMode === 'Software' && (
+                      <section className="space-y-4 rounded-2xl border border-emerald-300/70 bg-white px-6 py-5 shadow-[0_25px_45px_rgba(16,185,129,0.25)]">
+                        <div className="flex items-center gap-2 text-xs uppercase tracking-[0.4em] text-emerald-500">
+                          <Wrench className="h-4 w-4 text-emerald-500" />
+                          <span>Reparación</span>
+                        </div>
+                        <p className="text-sm font-semibold text-slate-900">Actualización de software</p>
+                        <div className="grid gap-3 sm:grid-cols-2">
+                          <div className="space-y-1">
+                            <p className="text-[11px] uppercase tracking-[0.4em] text-slate-500">Versión In</p>
+                            <input
+                              type="text"
+                              value={softwareVersionIn}
+                              onChange={(event) => setSoftwareVersionIn(event.target.value)}
+                              placeholder="Versión de ingreso"
+                              className="w-full rounded-[32px] border border-slate-800 bg-slate-900 px-4 py-3 text-sm text-white focus:border-emerald-400 focus-visible:outline-none"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <p className="text-[11px] uppercase tracking-[0.4em] text-slate-500">Versión Out</p>
+                            <input
+                              type="text"
+                              value={softwareVersionOut}
+                              onChange={(event) => setSoftwareVersionOut(event.target.value)}
+                              placeholder="Versión de salida"
+                              className="w-full rounded-[32px] border border-slate-800 bg-slate-900 px-4 py-3 text-sm text-white focus:border-emerald-400 focus-visible:outline-none"
+                            />
+                          </div>
+                        </div>
+                      </section>
+                    )}
+                    {selectedRepairMode !== 'Software' && (
+                      <div className="space-y-3">
+                        <label className="text-[11px] uppercase tracking-[0.4em] text-slate-500">Tipo de reparación</label>
+                        <div className="flex flex-wrap gap-3">
+                          <select
+                            value={selectedRepairOption}
+                            onChange={(event) => setSelectedRepairOption(event.target.value)}
+                            className={cn(
+                              'flex-1 min-w-[220px] rounded-2xl border px-3 py-2 text-sm outline-none transition focus:ring-2 focus:ring-emerald-400',
+                              isRepairStage
+                                ? 'border-slate-200 bg-white text-slate-900'
+                                : 'border-surface-700 bg-surface-900 text-surface-200'
+                            )}
+                          >
+                            {repairOptions.map((option) => (
+                              <option key={option} value={option}>
+                                {option}
+                              </option>
+                            ))}
+                          </select>
+                          <button
+                            type="button"
+                            onClick={handleAddRepair}
+                            className={cn(
+                              'flex items-center gap-2 rounded-2xl px-4 py-2 text-sm font-semibold transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2',
+                              isRepairStage
+                                ? 'border border-emerald-500 bg-emerald-500 text-white hover:border-emerald-400 shadow-[0_20px_45px_rgba(16,185,129,0.35)]'
+                                : 'border border-brand-500 text-brand-400 hover:border-brand-400 bg-transparent'
+                            )}
+                          >
+                            <span className="text-[18px] font-bold leading-none">+</span>
+                            Agregar
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                    <div
+                      className={cn(
+                        'rounded-2xl border p-4',
+                        isRepairStage
+                          ? 'bg-slate-900 border-slate-800 text-slate-100'
+                          : 'bg-surface-950 border-surface-800 text-surface-300'
+                      )}
+                    >
+                      <div className="divide-y divide-slate-800 text-sm">
+                        {repairsList.map((repair, index) => (
+                          <div key={`${repair.code}-${index}`} className="flex items-center justify-between py-3 text-slate-100">
+                            <span>{repair.repair}</span>
+                            <span className="font-mono text-xs text-slate-200">{repair.code}</span>
+                            <span className="text-slate-400">{repair.level}</span>
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveRepair(index)}
+                              className="text-xs text-red-400 hover:text-red-300"
+                            >
+                              Eliminar
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    <div className="space-y-3 pt-4">
+                      <button
+                        type="button"
+                        onClick={handleSendToQuality}
+                        disabled={!selectedOrder || repairsList.length === 0}
+                        className={cn(
+                          'w-full rounded-2xl px-4 py-3 text-sm font-semibold transition focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2',
+                          isRepairStage
+                            ? 'border border-slate-950 bg-slate-950 text-white hover:border-slate-600 hover:bg-slate-900'
+                            : 'border border-slate-950 bg-slate-950 text-white hover:border-slate-700',
+                          (!selectedOrder || repairsList.length === 0) && 'opacity-70 cursor-not-allowed'
+                        )}
+                      >
+                        Enviar a Control de Calidad
+                      </button>
+                      {repairActionMessage && (
+                        <p className="text-sm text-slate-400">{repairActionMessage}</p>
+                      )}
+                    </div>
+                  </section>
+
+                  {selectedRepairMode === 'Partes' && partesCards}
+
+                </>
+              ) : (
+                <div className="space-y-4">
+                  <section className="rounded-2xl border border-surface-700 bg-surface-900 p-6 space-y-4">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-xs uppercase tracking-[0.3em] text-surface-500">Datos del equipo</p>
+                        <h3 className="text-lg font-semibold text-white">{selectedOrder ? 'Detalle del equipo' : 'Sin selección'}</h3>
+                      </div>
+                      <span className="text-xs text-surface-400">{statusLabels[selectedOrder?.status ?? ''] ?? '—'}</span>
+                    </div>
+                    {renderEquipoFields('Selecciona una orden para ver los detalles.')}
+                  </section>
+                  <section className="rounded-2xl border border-surface-700 bg-surface-900 p-6 space-y-4">
+                    <p className="text-sm text-surface-400">Control de calidad - Vista simplificada</p>
+                  </section>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
