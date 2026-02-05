@@ -1,21 +1,23 @@
 import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 
+export const dynamic = 'force-dynamic';
+
 export async function GET(request: Request) {
-    try {
-        const { searchParams } = new URL(request.url)
-        const dispatchId = searchParams.get('dispatchId')
+  try {
+    const { searchParams } = new URL(request.url)
+    const dispatchId = searchParams.get('dispatchId')
 
-        if (!dispatchId) {
-            return NextResponse.json({ error: 'dispatchId requerido' }, { status: 400 })
-        }
+    if (!dispatchId) {
+      return NextResponse.json({ error: 'dispatchId requerido' }, { status: 400 })
+    }
 
-        const supabase = await createClient()
+    const supabase = await createClient()
 
-        // Obtener el despacho con sus items y cliente
-        const { data: dispatch, error: dispatchError } = await supabase
-            .from('dispatches')
-            .select(`
+    // Obtener el despacho con sus items y cliente
+    const { data: dispatch, error: dispatchError } = await supabase
+      .from('dispatches')
+      .select(`
                 *,
                 client:client_id (commercial_name),
                 items:dispatch_items (
@@ -25,20 +27,20 @@ export async function GET(request: Request) {
                     asset:assets(serial_number, internal_tag)
                 )
             `)
-            .eq('id', dispatchId)
-            .single()
+      .eq('id', dispatchId)
+      .single()
 
-        if (dispatchError || !dispatch) {
-            return NextResponse.json({ error: 'Despacho no encontrado' }, { status: 404 })
-        }
+    if (dispatchError || !dispatch) {
+      return NextResponse.json({ error: 'Despacho no encontrado' }, { status: 404 })
+    }
 
-        const today = new Date().toLocaleDateString('es-GT', {
-            year: 'numeric', month: 'long', day: 'numeric',
-            hour: '2-digit', minute: '2-digit'
-        })
+    const today = new Date().toLocaleDateString('es-GT', {
+      year: 'numeric', month: 'long', day: 'numeric',
+      hour: '2-digit', minute: '2-digit'
+    })
 
-        // Generamos HTML para impresión
-        const html = `
+    // Generamos HTML para impresión
+    const html = `
     <!DOCTYPE html>
     <html lang="es">
     <head>
@@ -154,13 +156,13 @@ export async function GET(request: Request) {
     </html>
     `
 
-        return new NextResponse(html, {
-            headers: {
-                'Content-Type': 'text/html',
-            },
-        })
-    } catch (error) {
-        console.error('Error generando PDF de despacho:', error)
-        return NextResponse.json({ error: 'Error al generar el documento' }, { status: 500 })
-    }
+    return new NextResponse(html, {
+      headers: {
+        'Content-Type': 'text/html',
+      },
+    })
+  } catch (error) {
+    console.error('Error generando PDF de despacho:', error)
+    return NextResponse.json({ error: 'Error al generar el documento' }, { status: 500 })
+  }
 }

@@ -21,6 +21,11 @@ export const metadata: Metadata = {
   description: 'Sistema ERP para gestión de activos ITAD y reciclaje electrónico. Cumplimiento norma R2v3.',
   keywords: ['ITAD', 'ERP', 'Guatemala', 'Reciclaje', 'Activos', 'R2v3'],
   authors: [{ name: 'ITAD Guatemala' }],
+  viewport: {
+    width: 'device-width',
+    initialScale: 1,
+    maximumScale: 5,
+  },
 }
 
 export default function RootLayout({

@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 
+export const dynamic = 'force-dynamic';
+
 // GET: Obtener catálogo de accesorios
 export async function GET(request: NextRequest) {
   try {
@@ -40,13 +42,13 @@ export async function GET(request: NextRequest) {
         const productTypeIds = data
           .map(acc => acc.product_type_id)
           .filter((id): id is string => id !== null && id !== undefined)
-        
+
         if (productTypeIds.length > 0) {
           const { data: productTypes } = await supabase
             .from('catalog_product_types')
             .select('id, name')
             .in('id', productTypeIds)
-          
+
           if (productTypes) {
             const productTypesMap = new Map(productTypes.map(pt => [pt.id, pt]))
             data.forEach(acc => {

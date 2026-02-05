@@ -1,21 +1,23 @@
 import { createClient } from '@/lib/supabase/server'
 import { NextResponse } from 'next/server'
 
+export const dynamic = 'force-dynamic';
+
 export async function GET(request: Request) {
-  try {
-    const url = new URL(request.url)
-    const assetId = url.searchParams.get('assetId')
+    try {
+        const url = new URL(request.url)
+        const assetId = url.searchParams.get('assetId')
 
-    if (!assetId) {
-      return NextResponse.json({ error: 'assetId requerido' }, { status: 400 })
-    }
+        if (!assetId) {
+            return NextResponse.json({ error: 'assetId requerido' }, { status: 400 })
+        }
 
-    const supabase = await createClient()
+        const supabase = await createClient()
 
-    // Obtener el asset con sus especificaciones
-    const { data: asset, error: assetError } = await supabase
-      .from('assets')
-      .select(`
+        // Obtener el asset con sus especificaciones
+        const { data: asset, error: assetError } = await supabase
+            .from('assets')
+            .select(`
         id,
         serial_number,
         internal_tag,
@@ -26,46 +28,46 @@ export async function GET(request: Request) {
         status,
         batch_id
       `)
-      .eq('id', assetId)
-      .single()
+            .eq('id', assetId)
+            .single()
 
-    if (assetError || !asset) {
-      return NextResponse.json({ error: 'Activo no encontrado' }, { status: 404 })
-    }
+        if (assetError || !asset) {
+            return NextResponse.json({ error: 'Activo no encontrado' }, { status: 404 })
+        }
 
-    const specs = asset.specifications as any || {}
-    const destroyedAt = specs.destroyed_at
-    const evidence = specs.destruction_evidence || []
-    const weight = specs.destruction_batch_weight
+        const specs = asset.specifications as any || {}
+        const destroyedAt = specs.destroyed_at
+        const evidence = specs.destruction_evidence || []
+        const weight = specs.destruction_batch_weight
 
-    if (!destroyedAt) {
-      return NextResponse.json({ error: 'Este activo no ha sido destruido' }, { status: 400 })
-    }
+        if (!destroyedAt) {
+            return NextResponse.json({ error: 'Este activo no ha sido destruido' }, { status: 400 })
+        }
 
-    // Obtener información del lote si existe
-    let batchInfo = null
-    if (asset.batch_id) {
-      const { data: batch } = await supabase
-        .from('batches')
-        .select('code, ticket_id')
-        .eq('id', asset.batch_id)
-        .single()
-      
-      if (batch) {
-        batchInfo = batch
-      }
-    }
+        // Obtener información del lote si existe
+        let batchInfo = null
+        if (asset.batch_id) {
+            const { data: batch } = await supabase
+                .from('batches')
+                .select('code, ticket_id')
+                .eq('id', asset.batch_id)
+                .single()
 
-    // Generar HTML del certificado
-    const destroyedDate = new Date(destroyedAt).toLocaleDateString('es-GT', {
-      day: '2-digit',
-      month: 'long',
-      year: 'numeric',
-      hour: '2-digit',
-      minute: '2-digit'
-    })
+            if (batch) {
+                batchInfo = batch
+            }
+        }
 
-    const certificateHTML = `
+        // Generar HTML del certificado
+        const destroyedDate = new Date(destroyedAt).toLocaleDateString('es-GT', {
+            day: '2-digit',
+            month: 'long',
+            year: 'numeric',
+            hour: '2-digit',
+            minute: '2-digit'
+        })
+
+        const certificateHTML = `
 <!DOCTYPE html>
 <html lang="es">
 <head>
@@ -245,16 +247,16 @@ export async function GET(request: Request) {
 </html>
     `
 
-    // Retornar como HTML
-    return new NextResponse(certificateHTML, {
-      headers: {
-        'Content-Type': 'text/html; charset=utf-8',
-        'Content-Disposition': `inline; filename="certificado-destruccion-${asset.serial_number || assetId}.html"`
-      }
-    })
+        // Retornar como HTML
+        return new NextResponse(certificateHTML, {
+            headers: {
+                'Content-Type': 'text/html; charset=utf-8',
+                'Content-Disposition': `inline; filename="certificado-destruccion-${asset.serial_number || assetId}.html"`
+            }
+        })
 
-  } catch (error) {
-    console.error('Error generando certificado:', error)
-    return NextResponse.json({ error: 'Error al generar el certificado' }, { status: 500 })
-  }
+    } catch (error) {
+        console.error('Error generando certificado:', error)
+        return NextResponse.json({ error: 'Error al generar el certificado' }, { status: 500 })
+    }
 }

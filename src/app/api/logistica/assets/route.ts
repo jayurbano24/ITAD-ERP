@@ -1,6 +1,8 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
 
+export const dynamic = 'force-dynamic';
+
 export async function GET(request: Request) {
   try {
     const url = new URL(request.url)
@@ -58,7 +60,7 @@ export async function GET(request: Request) {
     // Si la tabla no existe o hay un error de permisos, devolver datos vacíos
     if (assetsError) {
       console.error('API Assets: Database error when looking up assets:', assetsError)
-      
+
       // Verificar si es un error de tabla no encontrada
       if (assetsError.message?.includes('relation') || assetsError.message?.includes('does not exist')) {
         console.log('API Assets: Assets table does not exist, returning empty result')
@@ -68,16 +70,16 @@ export async function GET(request: Request) {
           message: 'Tabla assets no encontrada, usando datos vacíos'
         })
       }
-      
+
       return NextResponse.json({ error: `Error en base de datos: ${assetsError.message}` }, { status: 500 })
     }
 
     // Agrupar assets por marca, modelo y tipo de producto
     const groupedAssets = new Map()
-    
+
     assets?.forEach(asset => {
       const key = `${asset.brand || 'Sin marca'}|${asset.model || 'Sin modelo'}|${asset.product_type || 'Sin tipo'}`
-      
+
       if (!groupedAssets.has(key)) {
         groupedAssets.set(key, {
           brand: asset.brand || 'Sin marca',
@@ -88,7 +90,7 @@ export async function GET(request: Request) {
           assets: []
         })
       }
-      
+
       const group = groupedAssets.get(key)
       group.expectedQuantity++
       group.receivedQuantity++ // Todos los assets están recibidos
