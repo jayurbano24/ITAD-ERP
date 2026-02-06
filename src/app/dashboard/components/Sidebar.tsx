@@ -169,7 +169,6 @@ export default function Sidebar({
 
   const filteredItems = allowedModules
     ? menuItems.filter(item => allowedModules.includes(item.href))
-    // If no allowedModules, show all (except Configuration usually restricted but we'll leave as is for now unless role checks exist)
     : menuItems
 
   // Click en un enlace del menú - cerrar sidebar en móvil/tablet
@@ -179,10 +178,35 @@ export default function Sidebar({
     }
   }
 
-  // Desktop: sidebar siempre visible
-  if (device === 'desktop') {
-    return (
-      <aside className="hidden xl:flex w-64 bg-white dark:bg-[#1a1f2e] border-r border-gray-200 dark:border-gray-700 flex-col flex-shrink-0 transition-colors duration-300">
+  // Sidebar único con comportamiento responsive
+  return (
+    <>
+      {/* Backdrop - solo visible cuando está abierto en móvil/tablet */}
+      {isOpen && device !== 'desktop' && (
+        <div
+          className="fixed inset-0 bg-black/50 z-40 xl:hidden"
+          onClick={onClose}
+          aria-label="Cerrar menú"
+        />
+      )}
+
+      {/* Sidebar */}
+      <aside
+        className={cn(
+          // Base styles
+          "bg-white dark:bg-[#1a1f2e] border-r border-gray-200 dark:border-gray-700 flex flex-col transition-all duration-300",
+
+          // Desktop: siempre visible, posición relativa
+          "xl:relative xl:flex xl:w-64 xl:flex-shrink-0 xl:translate-x-0",
+
+          // Mobile/Tablet: posición fixed, oculto por defecto
+          "fixed inset-y-0 left-0 z-50 w-[280px]",
+          "xl:z-auto",
+
+          // Transform para mostrar/ocultar en móvil
+          isOpen ? "translate-x-0" : "-translate-x-full xl:translate-x-0"
+        )}
+      >
         {/* Logo */}
         <div className="p-6 border-b border-surface-100 dark:border-surface-800">
           <Link href="/dashboard" className="flex items-center gap-3">
@@ -303,165 +327,6 @@ export default function Sidebar({
               type="submit"
               className="w-full flex items-center gap-3 px-4 py-3 mt-2 text-surface-600 dark:text-surface-400 
                      hover:text-rose-600 dark:hover:text-red-400 hover:bg-rose-50 dark:hover:bg-red-500/10 rounded-xl transition-all duration-200"
-            >
-              <LogOut className="w-5 h-5" />
-              <span className="font-medium">Cerrar Sesión</span>
-            </button>
-          </form>
-        </div>
-      </aside>
-    )
-  }
-
-  // Tablet/Mobile: overlay behavior
-  return (
-    <>
-      {/* Backdrop */}
-      {isOpen && (
-        <div
-          className="fixed inset-0 bg-black/50 z-40 transition-opacity duration-300"
-          onClick={onClose}
-          aria-label="Cerrar menú"
-        />
-      )}
-
-      {/* Sidebar */}
-      <aside
-        className={cn(
-          "fixed inset-y-0 left-0 z-50 bg-white dark:bg-[#1a1f2e] border-r border-gray-200 dark:border-gray-700 flex flex-col transition-transform duration-300",
-          device === 'mobile' ? 'w-[280px]' : 'w-64',
-          isOpen ? 'translate-x-0' : '-translate-x-full'
-        )}
-      >
-        {/* Logo con botón cerrar */}
-        <div className="p-6 border-b border-surface-100 dark:border-surface-800 flex items-center justify-between">
-          <Link href="/dashboard" className="flex items-center gap-3" onClick={handleLinkClick}>
-            <div className="p-2 rounded-xl" style={logoBackgroundStyle}>
-              {svgLogoMarkup ? (
-                <div
-                  className="w-8 h-8 flex items-center justify-center text-white"
-                  dangerouslySetInnerHTML={{ __html: svgLogoMarkup }}
-                />
-              ) : companyLogo ? (
-                <img
-                  src={companyLogo}
-                  alt="Logo"
-                  className="w-8 h-8 object-contain"
-                  loading="lazy"
-                />
-              ) : (
-                <Recycle className="w-6 h-6 text-white" />
-              )}
-            </div>
-            <div className="min-w-0">
-              <Text variant="body" className="font-bold truncate" as="h1">
-                {companyName} <span className="text-brand-600 dark:text-brand-400">{companyTagline}</span>
-              </Text>
-              <Text variant="muted" className="text-xs truncate block">Sistema ERP</Text>
-            </div>
-          </Link>
-          <button
-            onClick={onClose}
-            className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-            aria-label="Cerrar menú"
-          >
-            <X className="w-5 h-5 text-gray-900 dark:text-white" />
-          </button>
-        </div>
-
-        {/* Navegación */}
-        <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
-          {filteredItems.map((item) => {
-            const isActive = pathname === item.href ||
-              (item.href !== '/dashboard' && pathname.startsWith(item.href))
-            const hasSubmenu = item.submenu && item.submenu.length > 0
-            const isExpanded = expandedMenu === item.href
-
-            return (
-              <div key={item.href}>
-                {hasSubmenu ? (
-                  <>
-                    <button
-                      onClick={() => setExpandedMenu(isExpanded ? null : item.href)}
-                      className={cn(
-                        "w-full flex items-center justify-between gap-3 px-4 py-3 border-l-4 transition-all duration-200",
-                        isActive
-                          ? "bg-emerald-50 dark:bg-emerald-500/10 text-emerald-900 dark:text-emerald-400 border-emerald-600 dark:border-emerald-500"
-                          : "text-gray-800 dark:text-gray-300 border-transparent hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-white"
-                      )}
-                    >
-                      <div className="flex items-center gap-3">
-                        <item.icon className="w-5 h-5" />
-                        <Text variant="body" className="font-medium">{item.label}</Text>
-                      </div>
-                      <ChevronDown className={cn(
-                        "w-4 h-4 transition-transform duration-200",
-                        isExpanded && "rotate-180"
-                      )} />
-                    </button>
-                    {/* Submenu */}
-                    {isExpanded && (
-                      <div className="mt-1 ml-4 pl-4 border-l border-surface-200 dark:border-surface-800 space-y-1">
-                        {item.submenu?.map((subItem) => {
-                          const isSubActive = pathname === subItem.href || pathname.startsWith(subItem.href)
-                          return (
-                            <Link
-                              key={subItem.href}
-                              href={subItem.href}
-                              onClick={handleLinkClick}
-                              className={cn(
-                                "flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all duration-200",
-                                isSubActive
-                                  ? "bg-emerald-100/50 dark:bg-emerald-500/10 text-emerald-900 dark:text-emerald-400 font-bold"
-                                  : "text-gray-800 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-white font-medium"
-                              )}
-                            >
-                              <subItem.icon className="w-4 h-4" />
-                              <span>{subItem.label}</span>
-                            </Link>
-                          )
-                        })}
-                      </div>
-                    )}
-                  </>
-                ) : (
-                  <Link
-                    href={item.href}
-                    onClick={handleLinkClick}
-                    className={cn(
-                      "w-full flex items-center gap-3 px-4 py-3 border-l-4 transition-all duration-200",
-                      isActive
-                        ? "bg-emerald-50 dark:bg-emerald-500/10 text-emerald-900 dark:text-emerald-400 border-emerald-600 dark:border-emerald-500"
-                        : "text-gray-800 dark:text-gray-300 border-transparent hover:bg-gray-100 dark:hover:bg-gray-800 hover:text-gray-900 dark:hover:text-white"
-                    )}
-                  >
-                    <item.icon className="w-5 h-5" />
-                    <Text variant="body" className="font-medium">{item.label}</Text>
-                  </Link>
-                )}
-              </div>
-            )
-          })}
-        </nav>
-
-        {/* Usuario y Logout */}
-        <div className="p-4 border-t border-surface-100 dark:border-surface-800">
-          <div className="flex items-center gap-3 px-4 py-3">
-            <div className="w-10 h-10 rounded-full bg-brand-50 dark:bg-brand-500/20 flex items-center justify-center">
-              <span className="text-brand-600 dark:text-brand-400 font-semibold">
-                {userName.charAt(0).toUpperCase()}
-              </span>
-            </div>
-            <div className="flex-1 min-w-0">
-              <Text variant="body" className="font-bold truncate block">{userName}</Text>
-              <Text variant="muted" className="text-[10px] capitalize block">{userRole.replace('_', ' ')}</Text>
-            </div>
-          </div>
-          <form action={logout}>
-            <button
-              type="submit"
-              className="w-full flex items-center gap-3 px-4 py-3 mt-2 text-surface-600 dark:text-surface-400 
-                       hover:text-rose-600 dark:hover:text-red-400 hover:bg-rose-50 dark:hover:bg-red-500/10 rounded-xl transition-all duration-200"
             >
               <LogOut className="w-5 h-5" />
               <span className="font-medium">Cerrar Sesión</span>
