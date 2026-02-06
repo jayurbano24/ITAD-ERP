@@ -11,9 +11,22 @@ export type DeviceType = 'mobile' | 'tablet' | 'desktop'
  * - Desktop: >= 1280px
  */
 export function useDevice(): DeviceType {
-    const [device, setDevice] = useState<DeviceType>('desktop')
+    // Inicializar based en window.innerWidth si está disponible
+    const getInitialDevice = (): DeviceType => {
+        if (typeof window === 'undefined') return 'desktop'
+
+        const width = window.innerWidth
+        if (width < 768) return 'mobile'
+        if (width >= 768 && width < 1280) return 'tablet'
+        return 'desktop'
+    }
+
+    const [device, setDevice] = useState<DeviceType>(getInitialDevice)
+    const [mounted, setMounted] = useState(false)
 
     useEffect(() => {
+        setMounted(true)
+
         const detectDevice = () => {
             const width = window.innerWidth
 
@@ -26,7 +39,7 @@ export function useDevice(): DeviceType {
             }
         }
 
-        // Detectar al montar
+        // Detectar inmediatamente al montar
         detectDevice()
 
         // Escuchar cambios de tamaño

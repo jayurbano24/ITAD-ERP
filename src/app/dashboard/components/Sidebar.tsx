@@ -182,7 +182,7 @@ export default function Sidebar({
   // Desktop: sidebar siempre visible
   if (device === 'desktop') {
     return (
-      <aside className="w-64 bg-white dark:bg-[#1a1f2e] border-r border-gray-200 dark:border-gray-700 flex flex-col flex-shrink-0 transition-colors duration-300">
+      <aside className="hidden xl:flex w-64 bg-white dark:bg-[#1a1f2e] border-r border-gray-200 dark:border-gray-700 flex-col flex-shrink-0 transition-colors duration-300">
         {/* Logo */}
         <div className="p-6 border-b border-surface-100 dark:border-surface-800">
           <Link href="/dashboard" className="flex items-center gap-3">
