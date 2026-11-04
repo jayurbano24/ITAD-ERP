@@ -760,18 +760,23 @@ export default function TallerStageDashboard({ workOrders }: { workOrders: WorkO
     })
   }
 
-  const handleQcReject = () => {
+  const handleQcReject = (returnTo: 'diagnostico' | 'reparacion' = 'reparacion') => {
     if (!selectedOrder) return
     setSendSuccess(null)
     setSendError(null)
     setRepairActionMessage(null)
 
+    const destino = returnTo === 'diagnostico' ? 'Diagnóstico' : 'Reparación'
     startTransition(async () => {
       try {
         const response = await fetch('/api/taller/quality/reject', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ workOrderId: selectedOrder.id })
+          body: JSON.stringify({
+            workOrderId: selectedOrder.id,
+            returnTo,
+            reason: `QC rechazado — regresa a ${destino}`,
+          }),
         })
         const body = await response.json()
 
@@ -780,8 +785,8 @@ export default function TallerStageDashboard({ workOrders }: { workOrders: WorkO
           return
         }
 
-        setRepairActionMessage('QC rechazado - orden devuelta a Reparación')
-        setSendSuccess('QC rechazado - regresó a Reparación')
+        setRepairActionMessage(`QC rechazado — orden devuelta a ${destino}`)
+        setSendSuccess(`QC rechazado — regresó a ${destino}`)
         router.refresh()
       } catch (error) {
         setSendError(error instanceof Error ? error.message : 'Error al revertir QC')
@@ -890,10 +895,10 @@ export default function TallerStageDashboard({ workOrders }: { workOrders: WorkO
   }
 
   return (
-    <div className="rounded-3xl border border-gray-100 dark:border-gray-800 bg-white dark:bg-[#1a1f2e] p-6 shadow-xl transition-all">
-      <div className="space-y-8 animate-in fade-in duration-500">
+    <div className="rounded-2xl border border-gray-100 dark:border-gray-800 bg-white dark:bg-[#1a1f2e] p-3 shadow-sm transition-all">
+      <div className="space-y-3 animate-in fade-in duration-300">
         {/* TABS STAGE INDICATOR */}
-        <div className="grid grid-cols-3 gap-1 bg-gray-100 dark:bg-[#1a1f2e] p-1.5 rounded-[2.5rem] border border-gray-100 dark:border-gray-800 shadow-inner">
+        <div className="grid grid-cols-3 gap-1 bg-gray-100 dark:bg-[#0f1419] p-1 rounded-xl border border-gray-100 dark:border-gray-800">
           {tabs.map((tab) => {
             const isActive = activeTab === tab.key
             return (
@@ -901,54 +906,46 @@ export default function TallerStageDashboard({ workOrders }: { workOrders: WorkO
                 key={tab.key}
                 onClick={() => setActiveTab(tab.key)}
                 className={cn(
-                  "relative flex items-center justify-center gap-3 py-4 rounded-[2rem] transition-all duration-500 overflow-hidden group",
+                  "relative flex items-center justify-center gap-2 py-2 px-2 rounded-lg transition-all overflow-hidden",
                   isActive
-                    ? "bg-white dark:bg-[#0f1419] shadow-2xl scale-[1.02] z-10"
+                    ? "bg-white dark:bg-[#1a1f2e] shadow-sm z-10"
                     : "hover:bg-white/50 dark:hover:bg-white/5 opacity-60 hover:opacity-100"
                 )}
               >
                 <div className={cn(
-                  "p-2.5 rounded-xl transition-colors duration-500",
-                  isActive ? "bg-amber-600 dark:bg-amber-500 shadow-lg shadow-amber-500/20" : "bg-gray-200 dark:bg-gray-800"
+                  "p-1.5 rounded-md transition-colors",
+                  isActive ? "bg-amber-600 dark:bg-amber-500" : "bg-gray-200 dark:bg-gray-800"
                 )}>
                   <tab.Icon className={cn(
-                    "w-5 h-5",
+                    "w-3.5 h-3.5",
                     isActive ? "text-white" : "text-gray-500 dark:text-gray-400"
                   )} />
                 </div>
-                <div className="flex flex-col items-start">
-                  <Text variant="label" className={cn(
-                    "tracking-[0.1em]",
+                <div className="flex flex-col items-start min-w-0">
+                  <span className={cn(
+                    "text-[9px] font-bold uppercase tracking-wider leading-none",
                     isActive ? "text-amber-700 dark:text-amber-400" : "text-gray-500 dark:text-gray-400"
                   )}>
                     Etapa
-                  </Text>
-                  <Text variant="body" className={cn(
-                    "font-black uppercase tracking-tight",
+                  </span>
+                  <span className={cn(
+                    "text-xs font-black uppercase tracking-tight truncate",
                     isActive ? "text-gray-900 dark:text-white" : "text-gray-500 dark:text-gray-400"
                   )}>
                     {tab.label}
-                  </Text>
+                  </span>
                 </div>
-                {isActive && (
-                  <div className="absolute top-2 right-4">
-                    <span className="flex h-2 w-2">
-                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span>
-                      <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span>
-                    </span>
-                  </div>
-                )}
               </button>
             )
           })}
         </div>
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-          {/* Sidebar de Órdenes Premium */}
-          <div className="lg:col-span-3 h-[calc(100vh-280px)] overflow-y-auto pr-2 custom-scrollbar space-y-3">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-3">
+          {/* Sidebar de Órdenes */}
+          <div className="lg:col-span-3 h-[calc(100vh-200px)] overflow-y-auto pr-1 custom-scrollbar space-y-1.5">
             {filteredOrders.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-20 bg-gray-50 dark:bg-[#0f1419] rounded-[2.5rem] border-2 border-dashed border-gray-100 dark:border-gray-800 opacity-60">
-                <Package className="w-16 h-16 text-gray-300 mb-4" />
-                <Text variant="label" className="text-gray-400">Sin órdenes activas</Text>
+              <div className="flex flex-col items-center justify-center py-10 bg-gray-50 dark:bg-[#0f1419] rounded-xl border border-dashed border-gray-200 dark:border-gray-800 opacity-60">
+                <Package className="w-8 h-8 text-gray-300 mb-2" />
+                <Text variant="label" className="text-gray-400 text-[10px]">Sin órdenes activas</Text>
               </div>
             ) : (
               filteredOrders.map(wo => {
@@ -960,40 +957,40 @@ export default function TallerStageDashboard({ workOrders }: { workOrders: WorkO
                     key={wo.id}
                     onClick={() => setSelectedId(wo.id)}
                     className={cn(
-                      "w-full text-left p-4 rounded-2xl border transition-all duration-500 group relative overflow-hidden",
+                      "w-full text-left px-3 py-2 rounded-xl border transition-all group relative overflow-hidden",
                       isSelected
-                        ? "bg-white dark:bg-[#1a1f2e] border-indigo-500/50 shadow-2xl shadow-indigo-500/10 ring-4 ring-indigo-500/5"
+                        ? "bg-white dark:bg-[#1a1f2e] border-indigo-500/50 shadow-md ring-1 ring-indigo-500/20"
                         : "bg-gray-50/50 dark:bg-[#0f1419] border-gray-100 dark:border-gray-800 hover:border-gray-300 dark:hover:border-gray-700"
                     )}
                   >
-                    {isSelected && <span className="absolute top-0 left-0 w-1.5 h-full bg-indigo-500" />}
-                    <div className="flex justify-between items-start mb-3">
-                      <span className="px-3 py-1 bg-gray-100 dark:bg-surface-800 text-gray-700 dark:text-surface-400 text-xs font-black rounded-lg border border-gray-100 dark:border-surface-700 uppercase tracking-tighter">
+                    {isSelected && <span className="absolute top-0 left-0 w-1 h-full bg-indigo-500" />}
+                    <div className="flex justify-between items-center gap-2 mb-1">
+                      <span className="px-1.5 py-0.5 bg-gray-100 dark:bg-surface-800 text-gray-700 dark:text-surface-400 text-[10px] font-black rounded border border-gray-100 dark:border-surface-700 uppercase">
                         OS-{wo.work_order_number?.split('-')[1] || wo.work_order_number}
                       </span>
                       <span className={cn(
-                        "flex items-center gap-1.5 text-[9px] font-black uppercase tracking-widest",
+                        "flex items-center gap-1 text-[8px] font-black uppercase tracking-wide truncate",
                         wo.status.includes('fail') || wo.status.includes('rejected') ? "text-rose-500" : "text-emerald-500"
                       )}>
-                        <div className={cn("w-1.5 h-1.5 rounded-full", wo.status.includes('fail') || wo.status.includes('rejected') ? "bg-rose-500 animate-pulse" : "bg-emerald-500")} />
+                        <div className={cn("w-1.5 h-1.5 rounded-full shrink-0", wo.status.includes('fail') || wo.status.includes('rejected') ? "bg-rose-500" : "bg-emerald-500")} />
                         {statusLabels[wo.status] || wo.status}
                       </span>
                     </div>
 
-                    <h3 className="text-lg font-black text-gray-900 dark:text-white mb-1 group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors tracking-tight uppercase leading-tight">
+                    <h3 className="text-xs font-black text-gray-900 dark:text-white group-hover:text-indigo-600 dark:group-hover:text-indigo-400 transition-colors tracking-tight uppercase leading-snug truncate">
                       {wo.asset?.manufacturer} {wo.asset?.model}
                     </h3>
-                    <div className="flex items-center gap-3 text-[10px] font-bold text-gray-400 uppercase tracking-wide">
-                      <span>{wo.asset?.internal_tag}</span>
-                      <span className="opacity-30">•</span>
-                      <span className="text-gray-400/60">{wo.asset?.serial_number || 'S/N'}</span>
+                    <div className="flex items-center gap-2 text-[9px] font-bold text-gray-400 uppercase tracking-wide mt-0.5">
+                      <span className="truncate">{wo.asset?.serial_number || wo.asset?.internal_tag || 'S/N'}</span>
                     </div>
 
-                    <div className="mt-4 flex gap-2 flex-wrap">
-                      {classifications.rec && <span className="px-2 py-0.5 bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 text-[10px] font-black rounded-md border border-amber-100 dark:border-amber-500/20">{classifications.rec}</span>}
-                      {classifications.f && <span className="px-2 py-0.5 bg-sky-50 dark:bg-sky-500/10 text-sky-600 dark:text-sky-400 text-[10px] font-black rounded-md border border-sky-100 dark:border-sky-500/20">{classifications.f}</span>}
-                      {classifications.c && <span className="px-2 py-0.5 bg-gray-100 dark:bg-surface-800 text-gray-600 dark:text-surface-400 text-[10px] font-black rounded-md border border-gray-200 dark:border-surface-700">{classifications.c}</span>}
-                    </div>
+                    {(classifications.rec || classifications.f || classifications.c) && (
+                      <div className="mt-1.5 flex gap-1 flex-wrap">
+                        {classifications.rec && <span className="px-1.5 py-0 bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 text-[9px] font-black rounded border border-amber-100 dark:border-amber-500/20">{classifications.rec}</span>}
+                        {classifications.f && <span className="px-1.5 py-0 bg-sky-50 dark:bg-sky-500/10 text-sky-600 dark:text-sky-400 text-[9px] font-black rounded border border-sky-100 dark:border-sky-500/20">{classifications.f}</span>}
+                        {classifications.c && <span className="px-1.5 py-0 bg-gray-100 dark:bg-surface-800 text-gray-600 dark:text-surface-400 text-[9px] font-black rounded border border-gray-200 dark:border-surface-700">{classifications.c}</span>}
+                      </div>
+                    )}
                   </button>
                 )
               })
@@ -1001,86 +998,78 @@ export default function TallerStageDashboard({ workOrders }: { workOrders: WorkO
           </div>
 
           {/* Detail Panel */}
-          <div className="lg:col-span-9 space-y-6">
+          <div className="lg:col-span-9 space-y-3">
             {!selectedOrder ? (
-              <div className="rounded-[2.5rem] border border-gray-100 dark:border-surface-800 bg-white dark:bg-surface-900 p-20 text-center shadow-xl transition-all flex flex-col items-center justify-center space-y-4">
-                <div className="p-5 rounded-full bg-gray-50 dark:bg-surface-950 shadow-inner">
-                  <Wrench className="w-10 h-10 text-gray-200 dark:text-surface-800" />
+              <div className="rounded-xl border border-gray-100 dark:border-surface-800 bg-white dark:bg-surface-900 p-10 text-center shadow-sm flex flex-col items-center justify-center space-y-2">
+                <div className="p-3 rounded-full bg-gray-50 dark:bg-surface-950">
+                  <Wrench className="w-6 h-6 text-gray-200 dark:text-surface-800" />
                 </div>
-                <p className="text-gray-400 dark:text-surface-500 font-black uppercase tracking-[0.3em] text-[10px]">Selecciona una orden de trabajo para ver detalles</p>
+                <p className="text-gray-400 dark:text-surface-500 font-black uppercase tracking-widest text-[10px]">Selecciona una orden</p>
               </div>
             ) : (
               <>
                 {/* Equipment Info Section */}
-                <section className="rounded-2xl border border-gray-100 dark:border-surface-800 bg-white dark:bg-surface-900 p-8 shadow-xl transition-all space-y-8">
-                  <div className="flex flex-wrap items-start justify-between gap-6">
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 flex-1">
-                      <div>
-                        <p className="text-[11px] font-black uppercase tracking-[0.4em] text-gray-600 dark:text-surface-400 leading-none mb-1.5">OS</p>
-                        <p className="text-4xl font-black text-gray-900 dark:text-emerald-400 tracking-tighter">#{formatWorkOrderId(selectedOrder)}</p>
-                      </div>
-                      <div>
-                        <p className="text-[11px] uppercase tracking-[0.4em] text-gray-600 dark:text-surface-400 font-black leading-none mb-1.5">Estado</p>
-                        <p className="text-gray-900 dark:text-white font-black uppercase tracking-wider text-xs">{statusLabels[selectedOrder.status] ?? selectedOrder.status}</p>
-                      </div>
-                      <div>
-                        <p className="text-[11px] uppercase tracking-[0.4em] text-gray-600 dark:text-surface-400 font-black leading-none mb-1.5">Serie/IMEI</p>
-                        <p className="text-gray-900 dark:text-white font-mono text-sm font-bold tracking-tighter">{selectedOrder.asset?.serial_number ?? '—'}</p>
-                      </div>
-                      <div>
-                        <p className="text-[11px] uppercase tracking-[0.4em] text-gray-600 dark:text-surface-400 font-black leading-none mb-1.5">Clasificación</p>
-                        <p className="text-gray-900 dark:text-white text-sm font-black">{classificationLabel}</p>
-                      </div>
+                <section className="rounded-xl border border-gray-100 dark:border-surface-800 bg-white dark:bg-surface-900 p-3 shadow-sm space-y-2">
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-2">
+                    <div>
+                      <p className="text-[9px] font-black uppercase tracking-wider text-gray-500 leading-none mb-0.5">OS</p>
+                      <p className="text-xl font-black text-gray-900 dark:text-emerald-400 tracking-tight">#{formatWorkOrderId(selectedOrder)}</p>
                     </div>
-                  </div>
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-6 pt-8 border-t border-gray-50 dark:border-surface-800">
-                    <div className="space-y-1">
-                      <p className="text-[10px] uppercase font-black tracking-widest text-gray-700 dark:text-surface-500 leading-none">Marca</p>
-                      <p className="text-gray-900 dark:text-white font-black text-sm uppercase">{selectedOrder.asset?.manufacturer ?? '—'}</p>
+                    <div>
+                      <p className="text-[9px] uppercase tracking-wider text-gray-500 font-black leading-none mb-0.5">Estado</p>
+                      <p className="text-gray-900 dark:text-white font-black uppercase tracking-wide text-[11px]">{statusLabels[selectedOrder.status] ?? selectedOrder.status}</p>
                     </div>
-                    <div className="space-y-1">
-                      <p className="text-[10px] uppercase font-black tracking-widest text-gray-700 dark:text-surface-500 leading-none">Modelo</p>
-                      <p className="text-gray-900 dark:text-white font-black text-sm uppercase">{selectedOrder.asset?.model ?? '—'}</p>
+                    <div>
+                      <p className="text-[9px] uppercase tracking-wider text-gray-500 font-black leading-none mb-0.5">Serie/IMEI</p>
+                      <p className="text-gray-900 dark:text-white font-mono text-xs font-bold">{selectedOrder.asset?.serial_number ?? '—'}</p>
                     </div>
-                    <div className="space-y-1">
-                      <p className="text-[10px] uppercase font-black tracking-widest text-gray-700 dark:text-surface-500 leading-none">Color</p>
-                      <p className="text-gray-900 dark:text-white font-black text-sm uppercase">{selectedOrder.asset?.color ?? '—'}</p>
+                    <div>
+                      <p className="text-[9px] uppercase tracking-wider text-gray-500 font-black leading-none mb-0.5">Clasificación</p>
+                      <p className="text-gray-900 dark:text-white text-xs font-black">{classificationLabel}</p>
                     </div>
-                    <div className="space-y-1">
-                      <p className="text-[10px] uppercase font-black tracking-widest text-gray-700 dark:text-surface-500 leading-none">Creado</p>
-                      <p className="text-gray-900 dark:text-white font-black text-xs uppercase">{new Date(selectedOrder.created_at).toLocaleDateString('es-GT', { day: '2-digit', month: 'short' })}</p>
+                    <div>
+                      <p className="text-[9px] uppercase font-black tracking-wider text-gray-500 leading-none mb-0.5">Marca</p>
+                      <p className="text-gray-900 dark:text-white font-black text-xs uppercase">{selectedOrder.asset?.manufacturer ?? '—'}</p>
+                    </div>
+                    <div>
+                      <p className="text-[9px] uppercase font-black tracking-wider text-gray-500 leading-none mb-0.5">Modelo</p>
+                      <p className="text-gray-900 dark:text-white font-black text-xs uppercase truncate">{selectedOrder.asset?.model ?? '—'}</p>
+                    </div>
+                    <div>
+                      <p className="text-[9px] uppercase font-black tracking-wider text-gray-500 leading-none mb-0.5">Color</p>
+                      <p className="text-gray-900 dark:text-white font-black text-xs uppercase">{selectedOrder.asset?.color ?? '—'}</p>
+                    </div>
+                    <div>
+                      <p className="text-[9px] uppercase font-black tracking-wider text-gray-500 leading-none mb-0.5">Creado</p>
+                      <p className="text-gray-900 dark:text-white font-black text-[11px] uppercase">{new Date(selectedOrder.created_at).toLocaleDateString('es-GT', { day: '2-digit', month: 'short' })}</p>
                     </div>
                   </div>
                   {selectedOrder.reported_issue && (
-                    <div className="mt-4 rounded-3xl border border-dashed border-gray-200 dark:border-surface-800 bg-gray-50 dark:bg-surface-950/50 p-6 space-y-2">
-                      <div className="flex items-center gap-2">
-                        <div className="w-1.5 h-1.5 rounded-full bg-indigo-500 shadow-[0_0_10px_rgba(99,102,241,0.5)]" />
-                        <p className="text-[10px] font-black uppercase tracking-widest text-gray-600 dark:text-surface-400 leading-none">Falla Reportada</p>
-                      </div>
-                      <p className="text-gray-600 dark:text-surface-300 font-bold text-sm italic">&quot;{selectedOrder.reported_issue}&quot;</p>
+                    <div className="rounded-lg border border-dashed border-gray-200 dark:border-surface-800 bg-gray-50 dark:bg-surface-950/50 px-3 py-2">
+                      <p className="text-[9px] font-black uppercase tracking-wider text-gray-500 mb-0.5">Falla reportada</p>
+                      <p className="text-gray-600 dark:text-surface-300 font-medium text-xs leading-snug">{selectedOrder.reported_issue}</p>
                     </div>
                   )}
                 </section>
 
                 {/* Diagnóstico Stage Content */}
                 {isDiagnosticoStage && (
-                  <section className="rounded-[2.5rem] border border-gray-100 dark:border-surface-800 bg-white dark:bg-surface-900 p-8 shadow-xl transition-all space-y-8 animate-in slide-in-from-bottom-5 duration-700">
-                    <div className="flex items-center justify-between border-b border-gray-50 dark:border-surface-800 pb-4">
-                      <p className="text-[11px] font-black uppercase tracking-[0.4em] text-gray-400 dark:text-surface-500">Diagnóstico y Acciones</p>
-                    </div>
+                  <section className="rounded-xl border border-gray-100 dark:border-surface-800 bg-white dark:bg-surface-900 p-3 shadow-sm space-y-3 animate-in fade-in duration-300">
+                    <p className="text-[10px] font-black uppercase tracking-wider text-gray-400 dark:text-surface-500 border-b border-gray-50 dark:border-surface-800 pb-2">
+                      Diagnóstico y acciones
+                    </p>
 
-                    {/* Diagnosis Actions Premium */}
-                    <div className="flex flex-wrap gap-3 mb-8">
+                    <div className="flex flex-wrap gap-1.5">
                       {diagnosisActions.map((action) => (
                         <button
                           key={action.key}
                           type="button"
                           onClick={() => setSelectedDiagnosisAction(action.key)}
                           className={cn(
-                            'px-6 py-3 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all duration-300 border shadow-sm',
+                            'px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all border',
                             selectedDiagnosisAction === action.key
-                              ? 'bg-indigo-600 border-indigo-500 text-white shadow-lg shadow-indigo-500/20'
-                              : 'bg-white dark:bg-surface-950 border-gray-100 dark:border-surface-800 text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400 hover:border-indigo-200 dark:hover:border-indigo-800'
+                              ? 'bg-indigo-600 border-indigo-500 text-white'
+                              : 'bg-white dark:bg-surface-950 border-gray-100 dark:border-surface-800 text-gray-400 hover:text-indigo-600 dark:hover:text-indigo-400'
                           )}
                         >
                           {action.label}
@@ -1088,61 +1077,59 @@ export default function TallerStageDashboard({ workOrders }: { workOrders: WorkO
                       ))}
                     </div>
 
-                    {/* Failure Selector Premium */}
-                    <div className="flex items-center gap-4 mb-8">
+                    <div className="flex items-center gap-2">
                       <div className="flex-1 relative group">
                         <select
                           value={selectedFailure}
                           onChange={(e) => setSelectedFailure(e.target.value)}
-                          className="w-full rounded-2xl border-2 border-gray-100 dark:border-surface-700 bg-gray-50 dark:bg-surface-950 px-6 py-4 text-sm font-bold text-gray-900 dark:text-white focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/5 transition-all outline-none appearance-none"
+                          className="w-full rounded-lg border border-gray-200 dark:border-surface-700 bg-gray-50 dark:bg-surface-950 px-3 py-2 text-xs font-bold text-gray-900 dark:text-white focus:border-indigo-500 outline-none appearance-none"
                         >
                           <option value="">Seleccionar falla...</option>
                           {FAILURE_TYPES.map((f) => (
                             <option key={f.value} value={f.value}>{f.label}</option>
                           ))}
                         </select>
-                        <ChevronDown className="absolute right-5 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none group-hover:text-indigo-500 transition-colors" />
+                        <ChevronDown className="absolute right-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400 pointer-events-none" />
                       </div>
                       <button
                         type="button"
                         onClick={handleAddDiagnosis}
                         disabled={!selectedFailure}
-                        className="px-8 py-4 rounded-2xl bg-indigo-600 text-white font-black uppercase tracking-widest text-[10px] hover:bg-indigo-500 disabled:opacity-50 transition-all shadow-xl shadow-indigo-500/20 active:scale-90 flex items-center gap-2"
+                        className="px-3 py-2 rounded-lg bg-indigo-600 text-white font-black uppercase tracking-wider text-[10px] hover:bg-indigo-500 disabled:opacity-50 transition-all flex items-center gap-1.5"
                       >
-                        <Plus className="w-5 h-5" />
+                        <Plus className="w-3.5 h-3.5" />
                         Agregar
                       </button>
                     </div>
 
-                    {/* Diagnosis Details Premium */}
                     {diagnosisDetails.length > 0 && (
-                      <div className="overflow-hidden rounded-[2rem] border border-gray-100 dark:border-surface-800 bg-gray-50 dark:bg-surface-950 p-2 mb-8 shadow-inner transition-all">
-                        <table className="min-w-full text-left">
+                      <div className="overflow-hidden rounded-lg border border-gray-100 dark:border-surface-800 bg-gray-50 dark:bg-surface-950">
+                        <table className="min-w-full text-left text-xs">
                           <thead>
-                            <tr className="text-[10px] font-black uppercase tracking-[0.2em] text-gray-700 dark:text-surface-400">
-                              <th className="px-6 py-4">Código</th>
-                              <th className="px-6 py-4">Descripción</th>
-                              <th className="px-6 py-4 text-right">Acción</th>
+                            <tr className="text-[9px] font-black uppercase tracking-wider text-gray-500 border-b border-gray-100 dark:border-gray-800">
+                              <th className="px-3 py-1.5">Código</th>
+                              <th className="px-3 py-1.5">Descripción</th>
+                              <th className="px-3 py-1.5 text-right"> </th>
                             </tr>
                           </thead>
                           <tbody className="divide-y divide-gray-100 dark:divide-gray-800">
                             {diagnosisDetails.map((d, i) => (
-                              <tr key={i} className="group hover:bg-white dark:hover:bg-surface-900 transition-colors duration-300">
-                                <td className="px-6 py-4">
-                                  <span className="px-3 py-1 bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 text-[10px] font-black rounded-lg border border-indigo-100 dark:border-indigo-500/20 uppercase tracking-tighter transition-all group-hover:bg-indigo-600 group-hover:text-white group-hover:border-indigo-500">
+                              <tr key={i} className="hover:bg-white dark:hover:bg-surface-900">
+                                <td className="px-3 py-1.5">
+                                  <span className="px-1.5 py-0.5 bg-indigo-50 dark:bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 text-[9px] font-black rounded border border-indigo-100 dark:border-indigo-500/20 uppercase">
                                     {d.code}
                                   </span>
                                 </td>
-                                <td className="px-6 py-4 text-xs font-bold text-gray-700 dark:text-gray-300 uppercase tracking-wide">
+                                <td className="px-3 py-1.5 text-[11px] font-bold text-gray-700 dark:text-gray-300 uppercase">
                                   {d.description}
                                 </td>
-                                <td className="px-6 py-4 text-right">
+                                <td className="px-3 py-1.5 text-right">
                                   <button
                                     type="button"
                                     onClick={() => handleRemoveDiagnosis(i)}
-                                    className="p-2 text-gray-300 hover:text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-500/10 rounded-xl transition-all active:scale-90"
+                                    className="p-1 text-gray-300 hover:text-rose-500 rounded transition-all"
                                   >
-                                    <Trash2 className="h-4 w-4" />
+                                    <Trash2 className="h-3.5 w-3.5" />
                                   </button>
                                 </td>
                               </tr>
@@ -1152,56 +1139,52 @@ export default function TallerStageDashboard({ workOrders }: { workOrders: WorkO
                       </div>
                     )}
 
-                    {/* Comment Premium */}
-                    <div className="space-y-4 mb-10">
-                      <label className="text-[10px] font-black uppercase tracking-widest text-gray-700 dark:text-surface-400">Comentarios Técnicos</label>
+                    <div className="space-y-1">
+                      <label className="text-[9px] font-black uppercase tracking-wider text-gray-500">Comentarios técnicos</label>
                       <textarea
                         value={diagnosisComment}
                         onChange={(e) => setDiagnosisComment(e.target.value)}
                         placeholder="Describa el estado detallado del equipo..."
-                        rows={4}
-                        className="w-full rounded-[2rem] border-2 border-gray-100 dark:border-gray-800 bg-gray-50 dark:bg-[#0f1419] px-8 py-6 text-sm font-bold text-gray-900 dark:text-white focus:border-indigo-500 focus:ring-4 focus:ring-indigo-500/5 transition-all outline-none shadow-inner"
+                        rows={2}
+                        className="w-full rounded-lg border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-[#0f1419] px-3 py-2 text-xs font-medium text-gray-900 dark:text-white focus:border-indigo-500 outline-none"
                       />
                     </div>
 
-                    {/* Send Button Premium */}
-                    <div className="pt-8 border-t border-gray-100 dark:border-gray-800 flex flex-col md:flex-row md:items-center justify-between gap-6">
-                      <div className="flex items-center gap-4">
-                        <div className="p-3 bg-indigo-50 dark:bg-indigo-500/10 rounded-2xl">
-                          <Zap className="w-5 h-5 text-indigo-600 dark:text-indigo-400" />
-                        </div>
+                    <div className="pt-2 border-t border-gray-100 dark:border-gray-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                      <div className="flex items-center gap-2">
+                        <Zap className="w-4 h-4 text-indigo-600 dark:text-indigo-400 shrink-0" />
                         <div className="relative">
                           <select
                             value={selectedDiagnosisAction}
                             onChange={(e) => setSelectedDiagnosisAction(e.target.value)}
-                            className="appearance-none bg-transparent border-none pr-8 text-sm font-black text-gray-900 dark:text-white uppercase tracking-widest focus:ring-0 cursor-pointer"
+                            className="appearance-none bg-transparent border-none pr-6 text-xs font-black text-gray-900 dark:text-white uppercase tracking-wider focus:ring-0 cursor-pointer"
                           >
                             {diagnosisActions.map(action => (
                               <option key={action.key} value={action.key}>{action.label}</option>
                             ))}
                           </select>
-                          <ChevronDown className="absolute right-0 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400 pointer-events-none" />
+                          <ChevronDown className="absolute right-0 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-gray-400 pointer-events-none" />
                         </div>
                       </div>
 
                       <button
                         onClick={handleSendToRepair}
                         disabled={isPending || diagnosisDetails.length === 0}
-                        className="px-10 py-5 bg-indigo-600 hover:bg-indigo-500 text-white font-black uppercase tracking-widest text-xs rounded-2xl transition-all shadow-xl shadow-indigo-500/30 disabled:opacity-50 active:scale-95 flex items-center gap-3"
+                        className="px-4 py-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-black uppercase tracking-wider text-[10px] rounded-lg transition-all disabled:opacity-50 active:scale-95 flex items-center justify-center gap-2"
                       >
-                        {isPending ? <Loader2 className="w-4 h-4 animate-spin" /> : <ChevronRight className="w-5 h-5" />}
+                        {isPending ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <ChevronRight className="w-4 h-4" />}
                         {sendButtonLabel}
                       </button>
                     </div>
 
-                    {sendError && <div className="p-4 bg-rose-50 dark:bg-rose-500/10 border border-rose-100 dark:border-rose-500/30 rounded-2xl text-rose-600 dark:text-rose-400 text-xs font-bold uppercase text-center mt-4 animate-in shake">{sendError}</div>}
-                    {sendSuccess && <div className="p-4 bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-100 dark:border-emerald-500/30 rounded-2xl text-emerald-600 dark:text-emerald-400 text-xs font-bold uppercase text-center mt-4 animate-in zoom-in">{sendSuccess}</div>}
+                    {sendError && <div className="p-2 bg-rose-50 dark:bg-rose-500/10 border border-rose-100 dark:border-rose-500/30 rounded-lg text-rose-600 dark:text-rose-400 text-[10px] font-bold uppercase text-center">{sendError}</div>}
+                    {sendSuccess && <div className="p-2 bg-emerald-50 dark:bg-emerald-500/10 border border-emerald-100 dark:border-emerald-500/30 rounded-lg text-emerald-600 dark:text-emerald-400 text-[10px] font-bold uppercase text-center">{sendSuccess}</div>}
                   </section>
                 )}
 
                 {/* Reparación Stage Content */}
                 {isReparacionStage && (
-                  <section className="rounded-[2.5rem] border border-gray-100 dark:border-surface-800 bg-white dark:bg-surface-900 p-8 shadow-xl transition-all space-y-8 animate-in slide-in-from-bottom-5 duration-700">
+                  <section className="rounded-xl border border-gray-100 dark:border-surface-800 bg-white dark:bg-surface-900 p-3 shadow-sm transition-all space-y-3 animate-in fade-in duration-300">
                     <div className="flex items-center justify-between border-b border-gray-50 dark:border-surface-800 pb-4">
                       <p className="text-[11px] font-black uppercase tracking-[0.4em] text-gray-700 dark:text-surface-400">Reparación</p>
                     </div>
@@ -1866,7 +1849,7 @@ export default function TallerStageDashboard({ workOrders }: { workOrders: WorkO
 
                 {/* QC Stage Content */}
                 {isQcStage && (
-                  <section className="rounded-[2.5rem] border border-gray-100 dark:border-surface-800 bg-white dark:bg-surface-900 p-8 shadow-xl transition-all space-y-8 animate-in slide-in-from-bottom-5 duration-700">
+                  <section className="rounded-xl border border-gray-100 dark:border-surface-800 bg-white dark:bg-surface-900 p-3 shadow-sm transition-all space-y-3 animate-in fade-in duration-300">
                     <div className="flex items-center justify-between border-b border-gray-50 dark:border-surface-800 pb-4">
                       <p className="text-[11px] font-black uppercase tracking-[0.4em] text-gray-400 dark:text-surface-500">Control de Calidad</p>
                     </div>
@@ -2084,25 +2067,38 @@ export default function TallerStageDashboard({ workOrders }: { workOrders: WorkO
                     />
 
                     {/* QC Actions */}
-                    <div className="flex flex-col sm:flex-row justify-end gap-4 pt-8 border-t border-gray-100 dark:border-surface-800">
-                      <button
-                        type="button"
-                        onClick={handleQcReject}
-                        disabled={isPending}
-                        className="px-10 py-5 rounded-2xl bg-gray-100 dark:bg-surface-800 text-gray-500 dark:text-surface-400 font-black uppercase tracking-widest text-[10px] hover:bg-rose-600 hover:text-white dark:hover:bg-rose-600 dark:hover:text-white disabled:opacity-50 transition-all active:scale-95"
-                      >
-                        Rechazar
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleQcApprove}
-                        disabled={isPending || (!selectedOutputClassificationRec && !selectedOutputClassificationF && !selectedOutputClassificationC)}
-                        title={!selectedOutputClassificationRec && !selectedOutputClassificationF && !selectedOutputClassificationC ? "Debe seleccionar al menos una clasificación (REC, F o C)" : ""}
-                        className="px-10 py-5 rounded-2xl bg-emerald-600 text-white font-black uppercase tracking-widest text-[10px] hover:bg-emerald-500 shadow-xl shadow-emerald-500/20 disabled:opacity-50 transition-all active:scale-95 flex items-center justify-center gap-3"
-                      >
-                        {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="w-5 h-5" />}
-                        Aprobar QC
-                      </button>
+                    <div className="flex flex-col gap-4 pt-8 border-t border-gray-100 dark:border-surface-800">
+                      <p className="text-[10px] font-black uppercase tracking-widest text-gray-400">
+                        Si rechaza QC, elija a dónde regresa el equipo
+                      </p>
+                      <div className="flex flex-col sm:flex-row justify-end gap-3">
+                        <button
+                          type="button"
+                          onClick={() => handleQcReject('diagnostico')}
+                          disabled={isPending}
+                          className="px-6 py-4 rounded-2xl bg-sky-100 dark:bg-sky-500/10 text-sky-700 dark:text-sky-300 font-black uppercase tracking-widest text-[10px] hover:bg-sky-600 hover:text-white disabled:opacity-50 transition-all active:scale-95"
+                        >
+                          Rechazar → Diagnóstico
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleQcReject('reparacion')}
+                          disabled={isPending}
+                          className="px-6 py-4 rounded-2xl bg-amber-100 dark:bg-amber-500/10 text-amber-700 dark:text-amber-300 font-black uppercase tracking-widest text-[10px] hover:bg-amber-600 hover:text-white disabled:opacity-50 transition-all active:scale-95"
+                        >
+                          Rechazar → Reparación
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleQcApprove}
+                          disabled={isPending || (!selectedOutputClassificationRec && !selectedOutputClassificationF && !selectedOutputClassificationC)}
+                          title={!selectedOutputClassificationRec && !selectedOutputClassificationF && !selectedOutputClassificationC ? "Debe seleccionar al menos una clasificación (REC, F o C)" : ""}
+                          className="px-10 py-4 rounded-2xl bg-emerald-600 text-white font-black uppercase tracking-widest text-[10px] hover:bg-emerald-500 shadow-xl shadow-emerald-500/20 disabled:opacity-50 transition-all active:scale-95 flex items-center justify-center gap-3"
+                        >
+                          {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="w-5 h-5" />}
+                          Aprobar QC → Remarketing
+                        </button>
+                      </div>
                     </div>
 
                     {sendError && <p className="text-rose-400 text-sm">{sendError}</p>}

@@ -1,9 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { setBatchPrice } from '@/app/dashboard/inventario/bodega/actions'
+import { setBatchPrice, type BatchPriceKind } from '@/app/dashboard/inventario/bodega/actions'
 
 export async function POST(request: NextRequest) {
   try {
-    const { batchId, warehouseCode, totalPrice } = await request.json()
+    const body = await request.json()
+    const { batchId, warehouseCode, totalPrice } = body
+    const kind: BatchPriceKind = body.kind === 'sale' ? 'sale' : 'cost'
 
     if (!batchId || !warehouseCode || totalPrice === undefined) {
       return NextResponse.json(
@@ -12,17 +14,19 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    const result = await setBatchPrice(batchId, warehouseCode, totalPrice)
+    const result = await setBatchPrice(batchId, warehouseCode, Number(totalPrice), kind)
 
     if (!result.success) {
       return NextResponse.json({ error: result.error }, { status: 400 })
     }
 
+    const label = kind === 'sale' ? 'Precio de venta' : 'Costo de compra'
     return NextResponse.json({
       success: true,
       count: result.count,
       pricePerUnit: result.pricePerUnit,
-      message: `Precio Q${totalPrice.toFixed(2)} distribuido entre ${result.count} equipos`
+      kind,
+      message: `${label} Q${Number(totalPrice).toFixed(2)} distribuido entre ${result.count} equipos`,
     })
   } catch (error) {
     console.error('[set-batch-price] Error:', error)

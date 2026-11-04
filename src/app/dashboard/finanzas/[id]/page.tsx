@@ -110,7 +110,11 @@ export default async function SettlementDetailPage({ params }: PageProps) {
           </div>
           <div className="space-y-1">
             <p className="text-gray-500 dark:text-surface-500 text-sm font-medium">Referencia Cliente</p>
-            <p className="text-gray-700 dark:text-surface-300 font-semibold">{settlement.batch?.client_reference || 'N/A'}</p>
+            <p className="text-gray-700 dark:text-surface-300 font-semibold">
+              {(settlement.batch as { description?: string | null; notes?: string | null } | undefined)?.description
+                || (settlement.batch as { notes?: string | null } | undefined)?.notes
+                || 'N/A'}
+            </p>
           </div>
           <div className="space-y-1">
             <p className="text-gray-500 dark:text-surface-500 text-sm font-medium">Fecha Recepción</p>

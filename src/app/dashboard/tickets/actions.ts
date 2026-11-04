@@ -140,14 +140,11 @@ async function parseManifestItems(file: File): Promise<ManifestRow[]> {
 export async function getTickets(): Promise<{ data: OperationsTicket[] | null; error: string | null }> {
   const supabase = await createClient()
 
-  const { data, error } = await supabase
+  // Embeds mínimos: created_by → auth.users (no profiles) y sin FK de items a catálogos.
+  const primary = await supabase
     .from('operations_tickets')
     .select(`
       *,
-      created_by_user:profiles!operations_tickets_created_by_fkey (
-        id,
-        full_name
-      ),
       client:crm_entities!client_id (
         id,
         commercial_name,
@@ -162,34 +159,31 @@ export async function getTickets(): Promise<{ data: OperationsTicket[] | null; e
         expected_serial,
         collected_serial,
         validation_status,
-        expected_quantity,
-        received_quantity,
-        status,
         brand_id,
         model_id,
-        product_type_id,
-        catalog_brand:catalog_brands!brand_id (
-          id,
-          name
-        ),
-        catalog_model:catalog_models!model_id (
-          id,
-          name
-        ),
-        catalog_product_type:catalog_product_types!product_type_id (
-          id,
-          name
-        )
+        product_type_id
       )
     `)
     .order('created_at', { ascending: false })
 
-  if (error) {
-    console.error('Error fetching tickets:', error)
-    return { data: null, error: error.message }
+  if (!primary.error && primary.data) {
+    return { data: primary.data as OperationsTicket[], error: null }
   }
 
-  return { data: data as OperationsTicket[], error: null }
+  console.error('Error fetching tickets:', primary.error)
+
+  // Fallback: listado plano si algún embed falla en esta BD
+  const fallback = await supabase
+    .from('operations_tickets')
+    .select('*')
+    .order('created_at', { ascending: false })
+
+  if (fallback.error) {
+    console.error('Error fetching tickets (fallback):', fallback.error)
+    return { data: null, error: fallback.error.message }
+  }
+
+  return { data: fallback.data as OperationsTicket[], error: null }
 }
 
 /**
@@ -206,8 +200,7 @@ export async function getTicketById(id: string): Promise<{ data: OperationsTicke
         id,
         commercial_name,
         tax_id_nit
-      )
-      ,
+      ),
       ticket_items (
         id,
         brand,
@@ -217,24 +210,9 @@ export async function getTicketById(id: string): Promise<{ data: OperationsTicke
         expected_serial,
         collected_serial,
         validation_status,
-        expected_quantity,
-        received_quantity,
-        status,
         brand_id,
         model_id,
-        product_type_id,
-        catalog_brand:catalog_brands!brand_id (
-          id,
-          name
-        ),
-        catalog_model:catalog_models!model_id (
-          id,
-          name
-        ),
-        catalog_product_type:catalog_product_types!product_type_id (
-          id,
-          name
-        )
+        product_type_id
       )
     `)
     .eq('id', id)
@@ -273,6 +251,10 @@ export async function createTicketAction(formData: FormData): Promise<{ success:
       model_id: string
       product_type_id: string
       quantity: number
+      expected_serial: string | null
+      brand: string | null
+      model: string | null
+      product_type: string | null
     }> = []
 
   // Buscar todos los items[idx].* en el FormData
@@ -292,9 +274,22 @@ export async function createTicketAction(formData: FormData): Promise<{ success:
     const model_id = formData.get(`items[${idx}].model_id`) as string
     const product_type_id = formData.get(`items[${idx}].product_type_id`) as string
     const quantity = parseInt(formData.get(`items[${idx}].quantity`) as string) || 1
+    const expected_serial = (formData.get(`items[${idx}].expected_serial`) as string) || null
+    const brand = (formData.get(`items[${idx}].brand`) as string) || null
+    const model = (formData.get(`items[${idx}].model`) as string) || null
+    const product_type = (formData.get(`items[${idx}].product_type`) as string) || null
 
     if (brand_id && model_id && product_type_id && quantity > 0) {
-      manualItems.push({ brand_id, model_id, product_type_id, quantity })
+      manualItems.push({
+        brand_id,
+        model_id,
+        product_type_id,
+        quantity,
+        expected_serial: expected_serial?.trim() || null,
+        brand,
+        model,
+        product_type,
+      })
     }
   })
 
@@ -310,6 +305,11 @@ export async function createTicketAction(formData: FormData): Promise<{ success:
   if (!client_id || !ticket_type || !title) {
     return { success: false, error: 'Cliente, tipo y título son requeridos' }
   }
+
+  // Foto del recibo OCR (opcional)
+  const receiptPhoto = formData.get('receipt_photo')
+  let attachment_url: string | null = null
+  let attachment_name: string | null = null
 
   // El readable_id se genera automáticamente por el trigger de la BD
   const { data: createdTicket, error } = await supabase
@@ -336,17 +336,80 @@ export async function createTicketAction(formData: FormData): Promise<{ success:
     return { success: false, error: error?.message || 'Error creando el ticket' }
   }
 
-  // Insertar items manuales si existen
+  if (receiptPhoto instanceof File && receiptPhoto.size > 0) {
+    try {
+      const ext = receiptPhoto.name.split('.').pop()?.toLowerCase() || 'jpg'
+      const safeName = receiptPhoto.name.replace(/[^a-zA-Z0-9._-]/g, '_')
+      const path = `${createdTicket.id}/receipt/${Date.now()}-${safeName || `recibo.${ext}`}`
+      const buffer = Buffer.from(await receiptPhoto.arrayBuffer())
+
+      const { error: uploadError } = await supabase.storage
+        .from('ticket-attachments')
+        .upload(path, buffer, {
+          contentType: receiptPhoto.type || 'image/jpeg',
+          upsert: false,
+        })
+
+      if (uploadError) {
+        console.error('[CREATE TICKET] Error subiendo foto del recibo:', uploadError)
+      } else {
+        const { data: urlData } = supabase.storage
+          .from('ticket-attachments')
+          .getPublicUrl(path)
+        attachment_url = urlData.publicUrl
+        attachment_name = receiptPhoto.name || 'recibo.jpg'
+
+        const { error: attachError } = await supabase
+          .from('operations_tickets')
+          .update({ attachment_url, attachment_name })
+          .eq('id', createdTicket.id)
+
+        if (attachError) {
+          console.error('[CREATE TICKET] Error guardando URL del recibo:', attachError)
+        }
+      }
+    } catch (uploadErr) {
+      console.error('[CREATE TICKET] Excepción subiendo recibo:', uploadErr)
+    }
+  }
+
+  // Insertar items manuales (schema real: sin expected_quantity/status)
   if (manualItems.length > 0) {
-    const ticketItemsPayload = manualItems.map(item => ({
-      ticket_id: createdTicket.id,
-      brand_id: item.brand_id,
-      model_id: item.model_id,
-      product_type_id: item.product_type_id,
-      expected_quantity: item.quantity,
-      received_quantity: 0,
-      status: 'COMPLETADO'
-    }))
+    type TicketItemInsertRow = {
+      ticket_id: string
+      brand_id: string
+      model_id: string
+      product_type_id: string
+      brand: string | null
+      model: string | null
+      product_type: string | null
+      box_number: number
+      validation_status: 'PENDIENTE_VALIDACION'
+      expected_serial: string | null
+    }
+
+    const ticketItemsPayload: TicketItemInsertRow[] = manualItems.flatMap((item) => {
+      const base = {
+        ticket_id: createdTicket.id,
+        brand_id: item.brand_id,
+        model_id: item.model_id,
+        product_type_id: item.product_type_id,
+        brand: item.brand,
+        model: item.model,
+        product_type: item.product_type,
+        box_number: 0,
+        validation_status: 'PENDIENTE_VALIDACION' as const,
+      }
+
+      // Con serie: una fila. Sin serie y qty>1: N filas (una por unidad esperada).
+      if (item.expected_serial) {
+        return [{ ...base, expected_serial: item.expected_serial as string }]
+      }
+      return Array.from({ length: item.quantity }, (): TicketItemInsertRow => ({
+        ...base,
+        expected_serial: null,
+      }))
+    })
 
     console.log('[CREATE TICKET] Inserting items:', ticketItemsPayload)
 
@@ -560,16 +623,30 @@ export async function deleteTicketCompletely(ticketId: string): Promise<{ succes
     console.log('[DELETE] Iniciando borrado de ticket con ID:', ticketId)
 
     // Ejecutar la función RPC que borra todo en cascada
-    const { data: result, error: rpcError } = await supabase
+    let { data: result, error: rpcError } = await supabase
       .rpc('delete_ticket_completely', {
         p_ticket_id: ticketId
       })
 
     console.log('[DELETE] Resultado RPC:', { result, error: rpcError })
 
+    // Fallback si la RPC no existe en esta BD: borrar en cascada desde la app
     if (rpcError) {
-      console.error('[DELETE] Error RPC:', rpcError)
-      return { success: false, error: `Error al borrar: ${rpcError.message}` }
+      console.warn('[DELETE] RPC falló, usando borrado directo:', rpcError.message)
+      await supabase.from('ticket_items').delete().eq('ticket_id', ticketId)
+      await supabase.from('batches').delete().eq('ticket_id', ticketId)
+      const { error: deleteError } = await supabase
+        .from('operations_tickets')
+        .delete()
+        .eq('id', ticketId)
+
+      if (deleteError) {
+        console.error('[DELETE] Error borrado directo:', deleteError)
+        return { success: false, error: `Error al borrar: ${deleteError.message}` }
+      }
+
+      result = [{ success: true, message: 'Ticket eliminado (fallback)' }]
+      rpcError = null
     }
 
     if (!result) {
@@ -623,9 +700,13 @@ export async function cancelTicketAction(ticketId: string): Promise<{ success: b
  * Obtiene los assets vinculados a un ticket (Equipos Recibidos)
  */
 export async function getTicketAssetsAction(ticketId: string): Promise<{ data: any[] | null; error: string | null }> {
-  const supabase = await createClient()
-
   try {
+    if (!ticketId) {
+      return { data: [], error: null }
+    }
+
+    const supabase = await createClient()
+
     // 1. Obtener los batches asociados al ticket
     const { data: batches, error: batchError } = await supabase
       .from('batches')
@@ -634,10 +715,11 @@ export async function getTicketAssetsAction(ticketId: string): Promise<{ data: a
 
     if (batchError) {
       console.error('Error fetching batches:', batchError)
-      return { data: null, error: batchError.message }
+      // Sin tabla batches o sin permiso: no hay equipos recibidos aún
+      return { data: [], error: null }
     }
 
-    const batchIds = batches.map(b => b.id)
+    const batchIds = (batches ?? []).map((b) => b.id)
 
     if (batchIds.length === 0) {
       return { data: [], error: null }
@@ -662,13 +744,13 @@ export async function getTicketAssetsAction(ticketId: string): Promise<{ data: a
 
     if (assetsError) {
       console.error('Error fetching assets:', assetsError)
-      return { data: null, error: assetsError.message }
+      return { data: [], error: null }
     }
 
-    return { data: assets, error: null }
+    return { data: assets ?? [], error: null }
   } catch (err) {
     console.error('Unexpected error in getTicketAssetsAction:', err)
-    return { data: null, error: 'Error inesperado al obtener equipos recibidos' }
+    return { data: [], error: null }
   }
 }
 

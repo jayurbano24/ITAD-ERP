@@ -77,8 +77,11 @@ export const menuItems: MenuItem[] = [
     icon: Warehouse,
     href: '/dashboard/inventario/bodega',
     submenu: [
+      { label: 'Inventario General', href: '/dashboard/inventario/bodega', icon: Warehouse },
       { label: 'Bodega Recepción', href: '/dashboard/inventario/bodega?warehouse=BOD-REC', icon: PackageCheck },
+      { label: 'Por Reparación', href: '/dashboard/inventario/bodega?warehouse=BOD-REP&tab=diagnostico', icon: Wrench },
       { label: 'Bodega Remarketing', href: '/dashboard/inventario/bodega?warehouse=BOD-REM', icon: PackagePlus },
+      { label: 'Equipos comprados', href: '/dashboard/inventario/bodega?warehouse=BOD-REM&tab=comprados', icon: ShoppingCart },
       { label: 'Bodega Valorización', href: '/dashboard/inventario/bodega?warehouse=BOD-VAL', icon: Calculator },
       { label: 'Bodega Hardvesting', href: '/dashboard/inventario/bodega?warehouse=BOD-HARV', icon: Wrench },
       { label: 'Bodega Destrucción', href: '/dashboard/inventario/bodega?warehouse=BOD-DES', icon: Trash2 },
@@ -94,7 +97,7 @@ export const menuItems: MenuItem[] = [
     icon: ShoppingCart,
     href: '/dashboard/ventas',
     submenu: [
-      { label: 'Órdenes', href: '/dashboard/ventas', icon: FileText },
+      { label: 'Historial / Facturas', href: '/dashboard/ventas', icon: FileText },
       { label: 'Nueva Venta', href: '/dashboard/ventas/nuevo', icon: Plus },
     ]
   },

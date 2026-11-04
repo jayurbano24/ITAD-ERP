@@ -1,9 +1,84 @@
 'use client'
 
-import React, { useState, useEffect, useCallback } from 'react'
-import { Package, Plus, X, PackageCheck, Loader2, ChevronRight, Wrench, Trash2 } from 'lucide-react'
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
+import { Package, Plus, X, PackageCheck, Loader2, Trash2, ScanBarcode } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Text } from '@/components/ui/Text'
+
+type ReceptionUnit = {
+  id: string
+  tipo: string
+  tipoId: string
+  marca: string
+  marcaId: string
+  modelo: string
+  modeloId: string
+  serie: string
+  expectedSerial?: string
+  color: string
+  tamanoPantalla: string
+  procesador: string
+  ramCapacity: string
+  ramType: string
+  diskCapacity: string
+  diskType: string
+  teclado: string
+  versionTeclado: string
+  classified: boolean
+  classification: string
+  details: Record<string, unknown>
+}
+
+type ProductLine = {
+  key: string
+  marca: string
+  marcaId: string
+  modelo: string
+  modeloId: string
+  tipo: string
+  tipoId: string
+  quantity: number
+  withSerial: number
+  templateItemId: string
+  units: ReceptionUnit[]
+}
+
+const buildProductLineKey = (unit: Pick<ReceptionUnit, 'marcaId' | 'modeloId' | 'tipoId' | 'marca' | 'modelo' | 'tipo'>) =>
+  [
+    unit.marcaId || unit.marca || 'sin-marca',
+    unit.modeloId || unit.modelo || 'sin-modelo',
+    unit.tipoId || unit.tipo || 'sin-tipo',
+  ]
+    .join('|')
+    .toLowerCase()
+
+const groupUnitsIntoLines = (units: ReceptionUnit[]): ProductLine[] => {
+  const map = new Map<string, ProductLine>()
+  for (const unit of units) {
+    const key = buildProductLineKey(unit)
+    const existing = map.get(key)
+    if (existing) {
+      existing.units.push(unit)
+      existing.quantity += 1
+      if (unit.serie) existing.withSerial += 1
+    } else {
+      map.set(key, {
+        key,
+        marca: unit.marca,
+        marcaId: unit.marcaId,
+        modelo: unit.modelo,
+        modeloId: unit.modeloId,
+        tipo: unit.tipo,
+        tipoId: unit.tipoId,
+        quantity: 1,
+        withSerial: unit.serie ? 1 : 0,
+        templateItemId: unit.id,
+        units: [unit],
+      })
+    }
+  }
+  return Array.from(map.values())
+}
 
 type CatalogAccessory = {
   id: string
@@ -24,6 +99,22 @@ type TicketMetadata = {
   readableId: string
   client: string
   lotNumber: string
+  attachmentUrl?: string | null
+  pickupAddress?: string | null
+  pickupDate?: string | null
+}
+
+type ReceptionTicketListItem = {
+  id: string
+  readableId: string
+  title: string
+  status: string
+  client: string
+  itemCount: number
+  pendingCount: number
+  attachmentUrl?: string | null
+  pickupAddress?: string | null
+  pickupDate?: string | null
 }
 
 type SavedLabel = {
@@ -69,12 +160,20 @@ const createReceptionForm = () => ({
 const RecepcionModule = () => {
   const [ticketSearchTerm, setTicketSearchTerm] = useState('')
   const [ticketInfo, setTicketInfo] = useState<TicketMetadata | null>(null)
+  const [availableTickets, setAvailableTickets] = useState<ReceptionTicketListItem[]>([])
+  const [loadingTickets, setLoadingTickets] = useState(false)
   const [loadingBoxes, setLoadingBoxes] = useState(false)
   const [boxesError, setBoxesError] = useState<string | null>(null)
   const [boxes, setBoxes] = useState<any[]>([])
   const [filterStatus, setFilterStatus] = useState('all')
   const [activeBoxDetails, setActiveBoxDetails] = useState<any>(null)
   const [activeUnitForReception, setActiveUnitForReception] = useState<any>(null)
+  const [activeProductLineKey, setActiveProductLineKey] = useState<string | null>(null)
+  const [serialInput, setSerialInput] = useState('')
+  const [addingSerial, setAddingSerial] = useState(false)
+  const [completingTicket, setCompletingTicket] = useState(false)
+  const [serialError, setSerialError] = useState<string | null>(null)
+  const serialInputRef = useRef<HTMLInputElement>(null)
   const [receptionForm, setReceptionForm] = useState(createReceptionForm())
   const [isPersistingDetails, setIsPersistingDetails] = useState(false)
   const [catalogAccessories, setCatalogAccessories] = useState<CatalogAccessory[]>([])
@@ -96,7 +195,7 @@ const RecepcionModule = () => {
     ? savedLabels.find((label) => label.boxId === activeBoxDetails.id)
     : null
 
-  // Load accessories catalog
+  // Load accessories catalog + tickets pendientes de recepción
   useEffect(() => {
     const loadAccessoriesCatalog = async () => {
       try {
@@ -110,6 +209,22 @@ const RecepcionModule = () => {
       }
     }
     loadAccessoriesCatalog()
+
+    const loadTickets = async () => {
+      setLoadingTickets(true)
+      try {
+        const response = await fetch('/api/recepcion/tickets')
+        if (response.ok) {
+          const data = await response.json()
+          setAvailableTickets(data.tickets || [])
+        }
+      } catch (error) {
+        console.error('Error loading reception tickets:', error)
+      } finally {
+        setLoadingTickets(false)
+      }
+    }
+    void loadTickets()
   }, [])
 
   // Función para cargar catálogos
@@ -318,29 +433,46 @@ const RecepcionModule = () => {
     !isPersistingDetails
   )
 
-  // Load boxes
-  const loadBoxesForTicket = async () => {
+  // Load boxes / equipos del ticket (incluye ítems sin caja logística)
+  const loadBoxesForTicket = async (
+    readableOverride?: string,
+    options?: { keepModalOpen?: boolean; preferredBoxId?: string }
+  ) => {
     setLoadingBoxes(true)
     setBoxesError(null)
     try {
-      const normalizedTicket = ticketSearchTerm.trim()
+      const normalizedTicket = (readableOverride ?? ticketSearchTerm).trim()
       if (!normalizedTicket) {
         setBoxesError('Ingresa el identificador del ticket')
         setLoadingBoxes(false)
         return
       }
+      if (readableOverride && !options?.keepModalOpen) {
+        setTicketSearchTerm(normalizedTicket)
+      }
       const response = await fetch(`/api/logistica/boxes?ticketReadableId=${encodeURIComponent(normalizedTicket)}`)
       if (!response.ok) {
-        setBoxesError('No fue posible cargar las cajas')
+        const errPayload = await response.json().catch(() => ({}))
+        setBoxesError(errPayload.error || 'No fue posible cargar el ticket')
         setLoadingBoxes(false)
         return
       }
       const payload = await response.json()
-      const ticketPayload = payload.ticket || { id: normalizedTicket, readableId: normalizedTicket, client: 'Cliente desconocido', lotNumber: `Lote ${normalizedTicket}` }
+      const ticketPayload: TicketMetadata = {
+        id: payload.ticket?.id || normalizedTicket,
+        readableId: payload.ticket?.readableId || normalizedTicket,
+        client: payload.ticket?.client || 'Cliente desconocido',
+        lotNumber: payload.ticket?.lotNumber || `Lote ${normalizedTicket}`,
+        attachmentUrl: payload.ticket?.attachmentUrl || null,
+        pickupAddress: payload.ticket?.pickupAddress || null,
+        pickupDate: payload.ticket?.pickupDate || null,
+      }
       const fetchedBoxes = Array.isArray(payload.boxes) ? payload.boxes : []
       const normalized = fetchedBoxes.map((box: any) => ({
         id: `${ticketPayload.id}-${box.boxNumber}`,
-        boxNumber: box.boxNumber || '',
+        boxNumber: box.boxNumber ?? 0,
+        label: box.label || (box.boxNumber > 0 ? `Caja ${box.boxNumber}` : 'Equipos del ticket'),
+        source: box.source || (box.boxNumber > 0 ? 'logistics' : 'ticket'),
         ticket: ticketPayload.readableId,
         ticketId: ticketPayload.id,
         cliente: ticketPayload.client,
@@ -354,7 +486,8 @@ const RecepcionModule = () => {
           marcaId: item.brand_id || '',
           modelo: (item.model_full || item.model || 'Sin modelo').toString(),
           modeloId: item.model_id || '',
-          serie: item.collected_serial || '',
+          serie: item.collected_serial || item.expected_serial || '',
+          expectedSerial: item.expected_serial || '',
           color: item.color_detail || item.color || '',
           tamanoPantalla: '',
           procesador: item.processor || '',
@@ -372,12 +505,32 @@ const RecepcionModule = () => {
       }))
       setTicketInfo(ticketPayload)
       setBoxes(normalized)
-      setBoxesError(normalized.length === 0 ? 'Este ticket no tiene cajas registradas' : null)
+
+      if (options?.keepModalOpen) {
+        const preferredId = options.preferredBoxId || activeBoxDetails?.id
+        const refreshed = normalized.find((b: any) => b.id === preferredId) || normalized[0] || null
+        setActiveBoxDetails(refreshed)
+      } else {
+        setActiveBoxDetails(null)
+        setActiveUnitForReception(null)
+        resetReceptionForm()
+        setActiveProductLineKey(null)
+      }
+
+      setBoxesError(
+        normalized.length === 0
+          ? 'Este ticket no tiene equipos. Agrégalos en Tickets o en Logística.'
+          : null
+      )
     } catch (error) {
-      setBoxesError('Error al cargar las cajas')
+      setBoxesError('Error al cargar el ticket')
     } finally {
       setLoadingBoxes(false)
     }
+  }
+
+  const selectTicketFromList = (ticket: ReceptionTicketListItem) => {
+    void loadBoxesForTicket(ticket.readableId)
   }
 
   const getBoxStats = (box: any) => {
@@ -386,12 +539,249 @@ const RecepcionModule = () => {
     return { classified, pending }
   }
 
+  const productLines = useMemo(
+    () => (activeBoxDetails ? groupUnitsIntoLines(activeBoxDetails.units as ReceptionUnit[]) : []),
+    [activeBoxDetails]
+  )
+
+  const activeProductLine = useMemo(
+    () => productLines.find((line) => line.key === activeProductLineKey) || null,
+    [productLines, activeProductLineKey]
+  )
+
+  // Al abrir el modal: seleccionar primera línea y enfocar pitoleo
+  useEffect(() => {
+    if (!activeBoxDetails) {
+      setActiveProductLineKey(null)
+      setSerialInput('')
+      setSerialError(null)
+      return
+    }
+    const lines = groupUnitsIntoLines(activeBoxDetails.units as ReceptionUnit[])
+    if (lines.length === 0) return
+    setActiveProductLineKey((prev) => {
+      if (prev && lines.some((l) => l.key === prev)) return prev
+      return lines[0].key
+    })
+    setTimeout(() => serialInputRef.current?.focus(), 120)
+  }, [activeBoxDetails])
+
+  const openBoxDetails = (box: any) => {
+    setActiveUnitForReception(null)
+    resetReceptionForm()
+    setActiveBoxDetails(box)
+  }
+
+  const selectProductLine = (line: ProductLine) => {
+    setActiveUnitForReception(null)
+    resetReceptionForm()
+    setActiveProductLineKey(line.key)
+    setSerialError(null)
+    setSerialInput('')
+    setTimeout(() => serialInputRef.current?.focus(), 80)
+  }
+
+  const refreshActiveTicketBoxes = async () => {
+    if (!activeBoxDetails) return
+    await loadBoxesForTicket(activeBoxDetails.ticket, {
+      keepModalOpen: true,
+      preferredBoxId: activeBoxDetails.id,
+    })
+  }
+
+  const handleAddSerialToLine = async () => {
+    if (!activeBoxDetails || !activeProductLine) return
+    const serial = serialInput.trim().toUpperCase()
+    if (!serial) {
+      setSerialError('Escanea o escribe una serie')
+      return
+    }
+
+    if (activeProductLine.withSerial >= activeProductLine.quantity) {
+      setSerialError(
+        `Máximo ${activeProductLine.quantity} series. Usa "Agregar adicional" para más cupos.`
+      )
+      return
+    }
+
+    const duplicate = activeProductLine.units.some(
+      (u) => (u.serie || '').trim().toUpperCase() === serial
+    )
+    if (duplicate) {
+      setSerialError(`La serie ${serial} ya está en esta línea`)
+      return
+    }
+
+    setAddingSerial(true)
+    setSerialError(null)
+    try {
+      const response = await fetch('/api/recepcion/serials', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'scan',
+          ticketId: activeBoxDetails.ticketId,
+          templateItemId: activeProductLine.templateItemId,
+          serial,
+        }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        setSerialError(payload.error || 'No se pudo agregar la serie')
+        return
+      }
+
+      setSerialInput('')
+      await refreshActiveTicketBoxes()
+      setTimeout(() => serialInputRef.current?.focus(), 150)
+    } catch {
+      setSerialError('Error de red al agregar serie')
+    } finally {
+      setAddingSerial(false)
+    }
+  }
+
+  const handleAddAdditionalSlot = async () => {
+    if (!activeBoxDetails || !activeProductLine) return
+    if (!confirm('¿Agregar 1 cupo adicional a esta línea?')) return
+
+    setAddingSerial(true)
+    setSerialError(null)
+    try {
+      const response = await fetch('/api/recepcion/serials', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'additional',
+          ticketId: activeBoxDetails.ticketId,
+          templateItemId: activeProductLine.templateItemId,
+        }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        setSerialError(payload.error || 'No se pudo agregar el adicional')
+        return
+      }
+      await refreshActiveTicketBoxes()
+      setTimeout(() => serialInputRef.current?.focus(), 150)
+    } catch {
+      setSerialError('Error de red al agregar adicional')
+    } finally {
+      setAddingSerial(false)
+    }
+  }
+
+  const reloadAvailableTickets = async () => {
+    try {
+      const response = await fetch('/api/recepcion/tickets')
+      if (response.ok) {
+        const data = await response.json()
+        setAvailableTickets(data.tickets || [])
+      }
+    } catch (error) {
+      console.error('Error reloading reception tickets:', error)
+    }
+  }
+
+  const handleCompleteTicket = async () => {
+    if (!activeBoxDetails?.ticketId) return
+
+    const units = (activeBoxDetails.units || []) as ReceptionUnit[]
+    if (units.length === 0) {
+      alert('No hay equipos en este ticket')
+      return
+    }
+
+    const missingSerial = units.filter((u) => !(u.serie || '').trim()).length
+    if (missingSerial > 0) {
+      alert(`Faltan ${missingSerial} serie(s). Completa el pitoleo antes de guardar.`)
+      return
+    }
+
+    const ok = confirm('¿Completar el ticket y enviar los equipos a Bodega Recepción?')
+    if (!ok) return
+
+    setCompletingTicket(true)
+    try {
+      const response = await fetch('/api/recepcion/complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ticketId: activeBoxDetails.ticketId,
+        }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        alert(payload.error || 'No se pudo completar el ticket')
+        return
+      }
+
+      const warehouseLabel = payload.warehouseName || payload.warehouseCode || 'Bodega Recepción'
+      const moved = payload.movedAssets ?? 0
+      alert(
+        `✓ Ticket ${activeBoxDetails.ticket} completado\n${moved} equipo(s) enviados a ${warehouseLabel}`
+      )
+      setActiveBoxDetails(null)
+      setActiveUnitForReception(null)
+      setActiveProductLineKey(null)
+      resetReceptionForm()
+      setBoxes([])
+      setTicketInfo(null)
+      setTicketSearchTerm('')
+      await reloadAvailableTickets()
+    } catch {
+      alert('Error de red al completar el ticket')
+    } finally {
+      setCompletingTicket(false)
+    }
+  }
+
+  const handleRemoveSerialFromLine = async (unit: ReceptionUnit) => {
+    if (!activeBoxDetails) return
+    const label = unit.serie || 'cupo sin serie'
+    if (!confirm(`¿Eliminar ${label} de esta línea?`)) return
+
+    setAddingSerial(true)
+    setSerialError(null)
+    try {
+      const response = await fetch('/api/recepcion/serials', {
+        method: 'DELETE',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ticketId: activeBoxDetails.ticketId,
+          itemId: unit.id,
+        }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        setSerialError(payload.error || 'No se pudo eliminar la serie')
+        return
+      }
+      if (activeUnitForReception?.id === unit.id) {
+        setActiveUnitForReception(null)
+        resetReceptionForm()
+      }
+      await refreshActiveTicketBoxes()
+    } catch {
+      setSerialError('Error de red al eliminar serie')
+    } finally {
+      setAddingSerial(false)
+    }
+  }
+
   const filteredBoxes = boxes.filter((box) => {
     const nBox = Number(box.boxNumber)
-    const isInvalidNumber = box.boxNumber === null || box.boxNumber === undefined || box.boxNumber === '' || !Number.isFinite(nBox)
+    // Permite caja 0 (equipos del ticket sin logística)
+    const isInvalidNumber =
+      box.boxNumber === null ||
+      box.boxNumber === undefined ||
+      box.boxNumber === '' ||
+      !Number.isFinite(nBox) ||
+      nBox < 0
     if (isInvalidNumber) return false
 
-    const isCompleted = box.units.every((u: any) => u.classified)
+    const isCompleted =
+      box.units.length > 0 && box.units.every((u: ReceptionUnit) => !!(u.serie || '').trim())
 
     if (filterStatus === 'completed') return isCompleted
     if (filterStatus === 'pending') return !isCompleted
@@ -519,7 +909,7 @@ const RecepcionModule = () => {
       marcaId: resolvedBrandId,
       modelo: modelName,
       modeloId: resolvedModelId,
-      serie: details.serie || unit.serie || '',
+      serie: details.serie || unit.serie || unit.expectedSerial || '',
       tipo: typeName,
       tipoId: resolvedTypeId,
       tamanoPantalla: details.tamanoPantalla || unit.tamanoPantalla || '',
@@ -686,7 +1076,8 @@ const RecepcionModule = () => {
   const colores = ['Negro', 'Gris', 'Plateado', 'Blanco', 'Azul']
   const versionTecladoOptions = ['Normal', 'Retroiluminado', 'Mecánico']
 
-  const activeBoxCompleted = activeBoxDetails ? getBoxStats(activeBoxDetails).pending === 0 : false
+  // En recepción solo se gestionan series; la clasificación no bloquea el flujo
+  const activeBoxCompleted = false
 
   return (
     <div className="space-y-10 animate-in fade-in duration-700">
@@ -694,42 +1085,92 @@ const RecepcionModule = () => {
         <div className="flex flex-col lg:flex-row lg:items-center justify-end gap-8 mb-12">
           <div className="grid grid-cols-2 gap-4">
             <div className="bg-white dark:bg-surface-900 rounded-[2.5rem] border border-gray-100 dark:border-surface-800 p-8 text-center shadow-xl shadow-gray-200/20 dark:shadow-black/20 min-w-[200px] transition-all hover:scale-105">
-              <div className="text-4xl font-black text-indigo-600 dark:text-indigo-400 mb-1 tracking-tighter">{boxes.reduce((acc, box) => acc + getBoxStats(box).classified, 0)}</div>
-              <div className="text-[10px] font-bold uppercase tracking-[0.3em] text-gray-700 dark:text-gray-300">Equipos Clasificados</div>
+              <div className="text-4xl font-black text-indigo-600 dark:text-indigo-400 mb-1 tracking-tighter">{boxes.reduce((acc, box) => acc + (box.units || []).filter((u: ReceptionUnit) => !!(u.serie || '').trim()).length, 0)}</div>
+              <div className="text-[10px] font-bold uppercase tracking-[0.3em] text-gray-700 dark:text-gray-300">Con Serie</div>
             </div>
             <div className="bg-white dark:bg-surface-900 rounded-[2.5rem] border border-gray-100 dark:border-surface-800 p-8 text-center shadow-xl shadow-gray-200/20 dark:shadow-black/20 min-w-[200px] transition-all hover:scale-105">
-              <div className="text-4xl font-black text-amber-500 dark:text-amber-400 mb-1 tracking-tighter">{boxes.reduce((acc, box) => acc + getBoxStats(box).pending, 0)}</div>
-              <div className="text-[10px] font-bold uppercase tracking-[0.3em] text-gray-700 dark:text-gray-300">Equipos Pendientes</div>
+              <div className="text-4xl font-black text-amber-500 dark:text-amber-400 mb-1 tracking-tighter">{boxes.reduce((acc, box) => acc + (box.units || []).filter((u: ReceptionUnit) => !(u.serie || '').trim()).length, 0)}</div>
+              <div className="text-[10px] font-bold uppercase tracking-[0.3em] text-gray-700 dark:text-gray-300">Sin Serie</div>
             </div>
           </div>
         </div>
 
-        <div className="mb-12 space-y-4">
+        <div className="mb-12 space-y-6">
           <div className="flex flex-col sm:flex-row gap-4">
             <div className="relative flex-1 group">
               <Plus className="absolute left-6 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400 group-focus-within:text-purple-500 transition-colors" />
               <input
-                placeholder="Ingresar ticket legible (ej: TK-000001)"
+                placeholder="Buscar ticket (ej: TK-2026-00005)"
                 value={ticketSearchTerm}
                 onChange={(e) => setTicketSearchTerm(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') void loadBoxesForTicket()
+                }}
                 className="w-full pl-16 pr-8 py-5 bg-white dark:bg-surface-950 border-2 border-gray-100 dark:border-surface-800 rounded-[2rem] text-gray-900 dark:text-white font-black placeholder-gray-500 dark:placeholder-surface-700 focus:outline-none focus:border-purple-500 dark:focus:border-purple-500 focus:ring-4 focus:ring-purple-500/5 transition-all shadow-inner"
               />
             </div>
             <button
-              onClick={loadBoxesForTicket}
+              onClick={() => void loadBoxesForTicket()}
               disabled={loadingBoxes}
               className="px-10 py-5 rounded-[2rem] font-black uppercase tracking-widest text-[11px] text-white bg-purple-600 hover:bg-purple-500 shadow-xl shadow-purple-500/20 active:scale-95 transition-all disabled:opacity-50 flex items-center justify-center gap-3"
             >
-              {loadingBoxes && <Plus className="w-5 h-5 animate-spin" />}
-              {loadingBoxes ? 'Cargando...' : 'Cargar Cajas'}
+              {loadingBoxes && <Loader2 className="w-5 h-5 animate-spin" />}
+              {loadingBoxes ? 'Cargando...' : 'Cargar Ticket'}
             </button>
           </div>
-          <div className="flex items-center gap-2 px-6">
-            <Package className="w-4 h-4 text-gray-400" />
-            <p className="text-[10px] font-bold uppercase tracking-widest text-gray-700 dark:text-gray-300">Sincroniza con el ticket finalizado desde logística para evitar duplicados</p>
+
+          <div className="space-y-3">
+            <div className="flex items-center justify-between px-2">
+              <p className="text-[10px] font-black uppercase tracking-widest text-gray-500 dark:text-surface-400">
+                Tickets listos para recepción
+              </p>
+              {loadingTickets && <Loader2 className="w-4 h-4 animate-spin text-purple-500" />}
+            </div>
+            {availableTickets.length === 0 && !loadingTickets ? (
+              <p className="text-sm text-gray-500 dark:text-surface-500 px-2">
+                No hay tickets activos. Crea uno en Tickets (con foto OCR si aplica).
+              </p>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
+                {availableTickets.map((ticket) => {
+                  const isActive = ticketInfo?.readableId === ticket.readableId
+                  return (
+                    <button
+                      key={ticket.id}
+                      type="button"
+                      onClick={() => selectTicketFromList(ticket)}
+                      className={cn(
+                        'text-left rounded-2xl border p-4 transition-all',
+                        isActive
+                          ? 'border-purple-500 bg-purple-500/10 shadow-lg shadow-purple-500/10'
+                          : 'border-gray-100 dark:border-surface-800 bg-white dark:bg-surface-900 hover:border-purple-400/50'
+                      )}
+                    >
+                      <div className="flex items-start justify-between gap-3">
+                        <div>
+                          <p className="text-sm font-black text-gray-900 dark:text-white uppercase tracking-wide">
+                            {ticket.readableId}
+                          </p>
+                          <p className="text-xs text-gray-500 dark:text-surface-400 mt-1 truncate">
+                            {ticket.client}
+                          </p>
+                        </div>
+                        <span className="text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400">
+                          {ticket.pendingCount}/{ticket.itemCount} pend.
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-gray-400 dark:text-surface-500 mt-2 truncate">
+                        {ticket.title}
+                      </p>
+                    </button>
+                  )
+                })}
+              </div>
+            )}
           </div>
+
           {boxesError && (
-            <div className="mx-6 p-4 bg-rose-50 dark:bg-rose-500/10 border border-rose-100 dark:border-rose-500/20 rounded-2xl flex items-center gap-3 animate-in shake duration-500">
+            <div className="p-4 bg-rose-50 dark:bg-rose-500/10 border border-rose-100 dark:border-rose-500/20 rounded-2xl flex items-center gap-3">
               <X className="w-4 h-4 text-rose-500" />
               <p className="text-[10px] font-black uppercase tracking-widest text-rose-600 dark:text-rose-400">{boxesError}</p>
             </div>
@@ -737,7 +1178,7 @@ const RecepcionModule = () => {
         </div>
 
         {ticketInfo && (
-          <div className="mb-8 px-8 py-5 bg-gray-50/50 dark:bg-surface-950/50 rounded-[2rem] border border-gray-100 dark:border-surface-800 inline-flex flex-wrap gap-8">
+          <div className="mb-8 px-8 py-5 bg-gray-50/50 dark:bg-surface-950/50 rounded-[2rem] border border-gray-100 dark:border-surface-800 flex flex-wrap gap-8 items-center">
             <div className="flex flex-col">
               <span className="text-[9px] font-black uppercase tracking-widest text-gray-500 dark:text-surface-400 leading-none mb-1.5">Ticket ID</span>
               <span className="text-xs font-black text-gray-900 dark:text-white uppercase leading-none">{ticketInfo.readableId}</span>
@@ -752,6 +1193,25 @@ const RecepcionModule = () => {
               <span className="text-[9px] font-black uppercase tracking-widest text-gray-500 dark:text-surface-400 leading-none mb-1.5">Lote</span>
               <span className="text-xs font-black text-gray-900 dark:text-white uppercase leading-none">{ticketInfo.lotNumber}</span>
             </div>
+            {ticketInfo.pickupAddress && (
+              <>
+                <div className="w-px h-8 bg-gray-200 dark:bg-surface-800 self-center hidden sm:block" />
+                <div className="flex flex-col min-w-0 max-w-sm">
+                  <span className="text-[9px] font-black uppercase tracking-widest text-gray-500 dark:text-surface-400 leading-none mb-1.5">Dirección</span>
+                  <span className="text-xs font-bold text-gray-900 dark:text-white leading-snug truncate">{ticketInfo.pickupAddress}</span>
+                </div>
+              </>
+            )}
+            {ticketInfo.attachmentUrl && (
+              <a
+                href={ticketInfo.attachmentUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="ml-auto px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-emerald-600 text-white hover:bg-emerald-500"
+              >
+                Ver recibo
+              </a>
+            )}
           </div>
         )}
 
@@ -793,8 +1253,8 @@ const RecepcionModule = () => {
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {filteredBoxes.map((box) => {
-            const stats = getBoxStats(box)
-            const isCompleted = stats.pending === 0
+            const withSerial = (box.units || []).filter((u: ReceptionUnit) => !!(u.serie || '').trim()).length
+            const isCompleted = box.units.length > 0 && withSerial === box.units.length
             return (
               <article key={box.id} className="bg-white dark:bg-surface-900 border border-gray-100 dark:border-surface-800 rounded-[2.5rem] p-8 shadow-xl hover:shadow-2xl transition-all group relative overflow-hidden flex flex-col justify-between min-h-[300px]">
                 {isCompleted && (
@@ -812,19 +1272,31 @@ const RecepcionModule = () => {
                   </div>
                   <div>
                     <p className="text-[10px] font-bold uppercase tracking-[0.4em] text-gray-700 dark:text-gray-300 leading-none mb-2">Unidad de Carga</p>
-                    <p className="text-3xl font-black text-gray-900 dark:text-white leading-none tracking-tighter">Caja {box.boxNumber}</p>
+                    <p className="text-3xl font-black text-gray-900 dark:text-white leading-none tracking-tighter">
+                      {box.label || (box.boxNumber > 0 ? `Caja ${box.boxNumber}` : 'Equipos del ticket')}
+                    </p>
                     <p className="text-[10px] font-bold text-purple-600 dark:text-purple-400 uppercase tracking-widest mt-3 whitespace-nowrap overflow-hidden text-ellipsis max-w-[150px]">{box.ticket}</p>
                   </div>
                 </header>
 
-                <div className="mt-8 grid grid-cols-2 gap-4">
+                <div className="mt-6 px-1">
+                  <p className="text-[9px] font-bold uppercase tracking-widest text-gray-500 dark:text-surface-400 mb-1">
+                    Cantidad a recibir
+                  </p>
+                  <p className="text-2xl font-black text-gray-900 dark:text-white tracking-tighter">
+                    {box.totalUnits || box.units?.length || 0}{' '}
+                    <span className="text-sm font-bold text-gray-400">activos</span>
+                  </p>
+                </div>
+
+                <div className="mt-6 grid grid-cols-2 gap-4">
                   <div className="p-4 bg-gray-50 dark:bg-surface-950 rounded-2xl border border-gray-100 dark:border-surface-800 shadow-inner">
-                    <p className="text-[9px] font-bold uppercase tracking-widest text-gray-700 dark:text-gray-300 mb-1">Clasificados</p>
-                    <p className="text-2xl font-black text-emerald-500 leading-none">{stats.classified}</p>
+                    <p className="text-[9px] font-bold uppercase tracking-widest text-gray-700 dark:text-gray-300 mb-1">Con serie</p>
+                    <p className="text-2xl font-black text-emerald-500 leading-none">{(box.units || []).filter((u: ReceptionUnit) => !!(u.serie || '').trim()).length}</p>
                   </div>
                   <div className="p-4 bg-gray-50 dark:bg-surface-950 rounded-2xl border border-gray-100 dark:border-surface-800 shadow-inner">
-                    <p className="text-[9px] font-bold uppercase tracking-widest text-gray-700 dark:text-gray-300 mb-1">Pendientes</p>
-                    <p className="text-2xl font-black text-amber-500 leading-none">{stats.pending}</p>
+                    <p className="text-[9px] font-bold uppercase tracking-widest text-gray-700 dark:text-gray-300 mb-1">Sin serie</p>
+                    <p className="text-2xl font-black text-amber-500 leading-none">{(box.units || []).filter((u: ReceptionUnit) => !(u.serie || '').trim()).length}</p>
                   </div>
                 </div>
 
@@ -835,7 +1307,7 @@ const RecepcionModule = () => {
                         alert('No se puede editar. Esta caja ya fue completada.')
                         return
                       }
-                      setActiveBoxDetails(box)
+                      openBoxDetails(box)
                     }}
                     disabled={isCompleted}
                     className={`flex-1 px-6 py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all active:scale-95 ${isCompleted
@@ -884,126 +1356,114 @@ const RecepcionModule = () => {
               }}
             />
 
-            <div className="relative w-full max-w-[1400px] h-[90vh] rounded-[3rem] bg-white dark:bg-surface-900 border border-gray-100 dark:border-surface-800 shadow-2xl flex flex-col overflow-hidden animate-in zoom-in-95 duration-500">
+            <div className="relative w-full max-w-[1200px] h-[85vh] rounded-2xl bg-white dark:bg-surface-900 border border-gray-100 dark:border-surface-800 shadow-2xl flex flex-col overflow-hidden animate-in zoom-in-95 duration-300">
               {/* Modal Header */}
-              <div className="px-10 py-8 border-b border-gray-50 dark:border-surface-800 bg-white/50 dark:bg-surface-900/50 backdrop-blur-md flex items-center justify-between shrink-0">
-                <div className="flex items-center gap-6">
-                  <div className="w-14 h-14 rounded-2xl bg-purple-500 dark:bg-purple-600 flex items-center justify-center shadow-lg shadow-purple-500/20">
-                    <Package className="text-white" size={28} />
+              <div className="px-5 py-3 border-b border-gray-100 dark:border-surface-800 flex items-center justify-between gap-3 shrink-0">
+                <div className="flex items-center gap-3 min-w-0">
+                  <div className="w-9 h-9 rounded-xl bg-purple-500 dark:bg-purple-600 flex items-center justify-center shrink-0">
+                    <Package className="text-white" size={18} />
                   </div>
-                  <div>
-                    <h3 className="text-2xl font-black text-gray-900 dark:text-white leading-none tracking-tighter uppercase mb-1.5">
-                      Detalles de Caja {activeBoxDetails.boxNumber}
+                  <div className="min-w-0">
+                    <h3 className="text-sm font-black text-gray-900 dark:text-white uppercase tracking-tight truncate">
+                      {activeBoxDetails.label || (activeBoxDetails.boxNumber > 0 ? `Caja ${activeBoxDetails.boxNumber}` : 'Equipos del ticket')}
                     </h3>
-                    <p className="text-[10px] font-black uppercase tracking-[0.4em] text-purple-600 dark:text-purple-400 leading-none">
+                    <p className="text-[10px] font-bold uppercase tracking-widest text-purple-600 dark:text-purple-400">
                       {activeBoxDetails.ticket}
                     </p>
                   </div>
                 </div>
 
-                <div className="flex items-center gap-4">
-                  {getBoxStats(activeBoxDetails).pending === 0 ? (
-                    <div className="flex items-center gap-3">
-                      <span className="px-4 py-2 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[10px] font-black uppercase tracking-widest">
-                        Completada
-                      </span>
-                      <button
-                        onClick={handleProcessBoxToWarehouse}
-                        className="px-8 py-4 rounded-2xl font-black uppercase tracking-widest text-[11px] text-white bg-emerald-600 hover:bg-emerald-500 shadow-xl shadow-emerald-500/20 transition-all active:scale-95"
-                      >
-                        Procesar a Bodega
-                      </button>
-                    </div>
+                <div className="flex items-center gap-2 flex-wrap justify-end">
+                  {((activeBoxDetails.units || []) as ReceptionUnit[]).every((u) => !!(u.serie || '').trim()) ? (
+                    <span className="px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[9px] font-black uppercase tracking-widest">
+                      Series listas
+                    </span>
                   ) : (
-                    <span className="px-4 py-2 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400 text-[10px] font-black uppercase tracking-widest">
-                      Pendiente de clasificación
+                    <span className="px-2.5 py-1 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400 text-[9px] font-black uppercase tracking-widest">
+                      Faltan series
                     </span>
                   )}
+                  <button
+                    type="button"
+                    onClick={() => void handleCompleteTicket()}
+                    disabled={
+                      completingTicket ||
+                      !(activeBoxDetails.units || []).every((u: ReceptionUnit) => !!(u.serie || '').trim())
+                    }
+                    className="px-3 py-2 rounded-xl font-black uppercase tracking-widest text-[10px] text-white bg-indigo-600 hover:bg-indigo-500 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
+                    title="Completa y envía a Bodega Recepción"
+                  >
+                    {completingTicket ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <PackageCheck className="w-3.5 h-3.5" />
+                    )}
+                    {completingTicket ? 'Enviando...' : 'Completar → Bodega'}
+                  </button>
                   <button
                     onClick={() => {
                       setActiveBoxDetails(null)
                       setActiveUnitForReception(null)
                       resetReceptionForm()
                     }}
-                    className="p-4 rounded-2xl bg-gray-50 dark:bg-surface-950 text-gray-400 hover:text-gray-900 dark:hover:text-white border border-gray-100 dark:border-surface-800 transition-all active:scale-95"
+                    className="p-2 rounded-xl bg-gray-50 dark:bg-surface-950 text-gray-400 hover:text-gray-900 dark:hover:text-white border border-gray-100 dark:border-surface-800"
                   >
-                    <X size={24} />
+                    <X size={18} />
                   </button>
                 </div>
               </div>
 
               {/* Modal Content */}
-              <div className="flex-1 overflow-hidden grid lg:grid-cols-[1fr,1.2fr]">
-                {/* Unit List */}
-                <div className="overflow-y-auto p-10 space-y-4 bg-gray-50/30 dark:bg-surface-950/30">
-                  <div className="flex items-center justify-between mb-6 px-2">
-                    <Text variant="label" className="text-gray-500 dark:text-gray-400">
-                      Unidades en esta caja ({activeBoxDetails.units.length})
-                    </Text>
-                  </div>
-                  {activeBoxDetails.units.map((unit: any) => {
-                    const isSelected = activeUnitForReception?.id === unit.id
+              <div className="flex-1 overflow-hidden grid lg:grid-cols-[280px,1fr]">
+                {/* Líneas de producto */}
+                <div className="overflow-y-auto p-3 space-y-2 bg-gray-50/40 dark:bg-surface-950/40 border-r border-gray-100 dark:border-surface-800">
+                  <p className="text-[9px] font-black uppercase tracking-widest text-gray-500 dark:text-surface-400 px-1 mb-1">
+                    Líneas ({productLines.length}) · {activeBoxDetails.units.length} activos
+                  </p>
+                  {productLines.map((line) => {
+                    const isSelected = activeProductLineKey === line.key && !activeUnitForReception
                     return (
-                      <div
-                        key={unit.id}
+                      <button
+                        key={line.key}
+                        type="button"
+                        onClick={() => selectProductLine(line)}
                         className={cn(
-                          "group relative flex flex-col sm:flex-row sm:items-center justify-between gap-6 p-6 rounded-[2rem] border transition-all duration-500",
+                          "w-full text-left relative flex flex-col gap-1.5 p-3 rounded-xl border transition-all",
                           isSelected
-                            ? "bg-white dark:bg-surface-900 border-purple-500/50 shadow-2xl shadow-purple-500/10 ring-4 ring-purple-500/5"
-                            : "bg-white dark:bg-surface-900/50 border-gray-100 dark:border-surface-800 hover:border-gray-200 dark:hover:border-surface-700 shadow-sm"
+                            ? "bg-white dark:bg-surface-900 border-purple-500/50 shadow-md"
+                            : "bg-white dark:bg-surface-900/50 border-gray-100 dark:border-surface-800 hover:border-purple-400/40"
                         )}
                       >
-                        {isSelected && <span className="absolute top-0 left-0 w-1.5 h-full bg-purple-500" />}
-
-                        <div className="flex items-center gap-5">
-                          <div className={cn(
-                            "w-12 h-12 rounded-2xl flex items-center justify-center transition-colors shadow-inner border",
-                            unit.classified
-                              ? "bg-emerald-50 dark:bg-emerald-500/10 text-emerald-500 border-emerald-100 dark:border-emerald-500/20"
-                              : "bg-gray-100 dark:bg-surface-800 text-gray-400 border-gray-100 dark:border-surface-800"
+                        {isSelected && <span className="absolute top-0 left-0 w-1 h-full bg-purple-500 rounded-l-xl" />}
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="text-xs font-black uppercase text-gray-900 dark:text-white truncate">
+                              {line.marca} {line.modelo}
+                            </p>
+                            <p className="text-[9px] font-bold uppercase tracking-widest text-purple-600 dark:text-purple-400 mt-0.5">
+                              {line.tipo}
+                            </p>
+                          </div>
+                          <div className="text-right shrink-0">
+                            <p className="text-lg font-black text-gray-900 dark:text-white leading-none">{line.quantity}</p>
+                            <p className="text-[8px] font-black uppercase tracking-widest text-gray-400">Cant.</p>
+                          </div>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className={cn(
+                            "text-[9px] font-black uppercase tracking-widest",
+                            line.withSerial >= line.quantity ? "text-emerald-500" : "text-amber-500"
                           )}>
-                            <Package size={24} />
-                          </div>
-                          <div>
-                            <Text variant="body" className="font-bold uppercase leading-tight">{unit.marca} {unit.modelo}</Text>
-                            <div className="flex items-center gap-3 mt-1.5">
-                              <Text variant="label" className="text-purple-600 dark:text-purple-400">{unit.tipo}</Text>
-                              <span className="w-1 h-1 rounded-full bg-gray-300 dark:bg-gray-700" />
-                              <Text variant="muted" className="font-mono font-bold">S/N: {unit.serie || '---'}</Text>
-                            </div>
-                          </div>
+                            Series {line.withSerial}/{line.quantity}
+                          </span>
+                          <span className="text-[9px] font-bold uppercase tracking-widest text-purple-500">Detalle →</span>
                         </div>
-
-                        <div className="flex items-center gap-6">
-                          <div className="text-right">
-                            <span className={cn(
-                              "text-[10px] font-black uppercase tracking-widest",
-                              unit.classified ? "text-emerald-500" : "text-amber-500"
-                            )}>
-                              {unit.classified ? unit.classification : 'Pendiente'}
-                            </span>
-                          </div>
-                          <button
-                            onClick={() => handleStartReception(unit)}
-                            disabled={!!activeBoxLabel || activeBoxCompleted}
-                            className={cn(
-                              "px-6 py-3 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed",
-                              activeBoxCompleted
-                                ? "bg-gray-200 dark:bg-surface-700 text-gray-400 dark:text-surface-500"
-                                : unit.classified
-                                  ? "bg-gray-100 dark:bg-surface-800 text-gray-900 dark:text-white hover:bg-gray-200 dark:hover:bg-surface-700"
-                                  : "bg-purple-600 text-white hover:bg-purple-500 shadow-lg shadow-purple-500/20"
-                            )}
-                          >
-                            {unit.classified ? 'Editar' : 'Recibir'}
-                          </button>
-                        </div>
-                      </div>
+                      </button>
                     )
                   })}
                 </div>
 
-                <div className="overflow-y-auto p-10 bg-white dark:bg-surface-900 border-l border-gray-100 dark:border-surface-800">
+                <div className="overflow-y-auto p-4 bg-white dark:bg-surface-900">
                   {activeUnitForReception ? (
                     <div className="space-y-10 animate-in slide-in-from-right duration-700">
                       <div className="flex items-center justify-between group">
@@ -1391,14 +1851,150 @@ const RecepcionModule = () => {
                         </p>
                       </div>
                     </div>
-                  ) : (
-                    <div className="h-full flex flex-col items-center justify-center p-12 text-center">
-                      <div className="w-24 h-24 rounded-[2rem] bg-gray-50 dark:bg-surface-950 flex items-center justify-center border border-gray-100 dark:border-surface-800 shadow-inner mb-8 opacity-40">
-                        <Package size={48} className="text-gray-300" />
+                  ) : activeProductLine ? (
+                    <div className="space-y-3 animate-in slide-in-from-right duration-300">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-[9px] font-black uppercase tracking-widest text-purple-600 dark:text-purple-400">
+                            Detalle de línea
+                          </p>
+                          <h4 className="text-base font-black text-gray-900 dark:text-white uppercase tracking-tight truncate">
+                            {activeProductLine.marca} {activeProductLine.modelo}
+                          </h4>
+                          <p className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">
+                            {activeProductLine.tipo}
+                          </p>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <div className="rounded-lg border border-gray-100 dark:border-surface-800 bg-gray-50 dark:bg-surface-950 px-3 py-2 text-center">
+                            <p className="text-lg font-black text-gray-900 dark:text-white leading-none">{activeProductLine.quantity}</p>
+                            <p className="text-[8px] font-black uppercase tracking-widest text-gray-400 mt-1">Recibir</p>
+                          </div>
+                          <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-center">
+                            <p className="text-lg font-black text-emerald-500 leading-none">{activeProductLine.withSerial}</p>
+                            <p className="text-[8px] font-black uppercase tracking-widest text-emerald-600/80 mt-1">Serie</p>
+                          </div>
+                          <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-center">
+                            <p className="text-lg font-black text-amber-500 leading-none">
+                              {Math.max(activeProductLine.quantity - activeProductLine.withSerial, 0)}
+                            </p>
+                            <p className="text-[8px] font-black uppercase tracking-widest text-amber-600/80 mt-1">Sin</p>
+                          </div>
+                        </div>
                       </div>
-                      <h4 className="text-xl font-black text-gray-400 dark:text-surface-700 uppercase tracking-tighter mb-2">Selecciona un equipo</h4>
-                      <p className="text-[10px] font-black uppercase tracking-widest text-gray-300 dark:text-surface-800 max-w-xs">
-                        Para iniciar el proceso de clasificación selecciona una unidad de la lista de la izquierda
+
+                      <div className={cn(
+                        'rounded-xl border p-3 space-y-2',
+                        activeProductLine.withSerial >= activeProductLine.quantity
+                          ? 'border-emerald-500/30 bg-emerald-500/5'
+                          : 'border-purple-500/30 bg-purple-500/5'
+                      )}>
+                        <div className="flex items-center justify-between gap-2 flex-wrap">
+                          <div className="flex items-center gap-2">
+                            <ScanBarcode className={cn(
+                              'w-4 h-4',
+                              activeProductLine.withSerial >= activeProductLine.quantity ? 'text-emerald-500' : 'text-purple-500'
+                            )} />
+                            <p className={cn(
+                              'text-[9px] font-black uppercase tracking-widest',
+                              activeProductLine.withSerial >= activeProductLine.quantity
+                                ? 'text-emerald-600 dark:text-emerald-400'
+                                : 'text-purple-600 dark:text-purple-400'
+                            )}>
+                              {activeProductLine.withSerial >= activeProductLine.quantity
+                                ? `Series ${activeProductLine.withSerial}/${activeProductLine.quantity}`
+                                : `Pitoleo · ${activeProductLine.withSerial}/${activeProductLine.quantity}`}
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => void handleAddAdditionalSlot()}
+                            disabled={addingSerial || !!activeBoxLabel || activeBoxCompleted}
+                            className="px-2.5 py-1.5 rounded-lg border border-purple-500/40 text-purple-600 dark:text-purple-400 text-[9px] font-black uppercase tracking-widest hover:bg-purple-500/10 disabled:opacity-50 flex items-center gap-1"
+                          >
+                            <Plus className="w-3 h-3" />
+                            Adicional
+                          </button>
+                        </div>
+                        {activeProductLine.withSerial >= activeProductLine.quantity ? (
+                          <p className="text-[9px] font-bold uppercase tracking-widest text-emerald-600 dark:text-emerald-400">
+                            Cupos llenos · usa Adicional para más
+                          </p>
+                        ) : (
+                          <div className="flex gap-2">
+                            <input
+                              ref={serialInputRef}
+                              value={serialInput}
+                              onChange={(e) => {
+                                setSerialInput(e.target.value)
+                                setSerialError(null)
+                              }}
+                              onKeyDown={(e) => {
+                                if (e.key === 'Enter') {
+                                  e.preventDefault()
+                                  void handleAddSerialToLine()
+                                }
+                              }}
+                              placeholder="Serie + Enter"
+                              disabled={addingSerial || !!activeBoxLabel || activeBoxCompleted}
+                              className="flex-1 px-3 py-2 rounded-lg bg-white dark:bg-surface-950 border border-gray-100 dark:border-surface-800 font-mono text-sm font-bold text-gray-900 dark:text-white focus:outline-none focus:border-purple-500 disabled:opacity-50"
+                              autoComplete="off"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => void handleAddSerialToLine()}
+                              disabled={addingSerial || !serialInput.trim() || !!activeBoxLabel || activeBoxCompleted}
+                              className="px-3 py-2 rounded-lg bg-purple-600 text-white text-[9px] font-black uppercase tracking-widest hover:bg-purple-500 disabled:opacity-50 flex items-center gap-1"
+                            >
+                              {addingSerial ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
+                              Serie
+                            </button>
+                          </div>
+                        )}
+                        {serialError && (
+                          <p className="text-[9px] font-black uppercase tracking-widest text-rose-500">{serialError}</p>
+                        )}
+                      </div>
+
+                      <div className="space-y-1.5">
+                        <p className="text-[9px] font-black uppercase tracking-widest text-gray-500 dark:text-surface-400 px-0.5">
+                          Series en esta línea
+                        </p>
+                        {activeProductLine.units.map((unit) => (
+                          <div
+                            key={unit.id}
+                            className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg border border-gray-100 dark:border-surface-800 bg-gray-50/80 dark:bg-surface-950/60"
+                          >
+                            <div className="min-w-0">
+                              <p className="font-mono text-xs font-black text-gray-900 dark:text-white truncate">
+                                {unit.serie || 'Sin serie'}
+                              </p>
+                              <p className={cn(
+                                'text-[8px] font-black uppercase tracking-widest',
+                                unit.serie ? 'text-emerald-500' : 'text-amber-500'
+                              )}>
+                                {unit.serie ? 'Serie registrada' : 'Sin serie'}
+                              </p>
+                            </div>
+                            <button
+                              type="button"
+                              title="Eliminar serie"
+                              onClick={() => void handleRemoveSerialFromLine(unit)}
+                              disabled={addingSerial || !!activeBoxLabel}
+                              className="p-1.5 rounded-lg bg-red-500/10 text-red-500 hover:bg-red-500/20 disabled:opacity-50"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="h-full flex flex-col items-center justify-center p-8 text-center">
+                      <Package size={36} className="text-gray-300 mb-3 opacity-50" />
+                      <h4 className="text-sm font-black text-gray-400 uppercase tracking-tight mb-1">Selecciona una línea</h4>
+                      <p className="text-[9px] font-bold uppercase tracking-widest text-gray-400 max-w-xs">
+                        Elige un producto a la izquierda
                       </p>
                     </div>
                   )}

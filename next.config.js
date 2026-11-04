@@ -13,6 +13,13 @@ const nextConfig = {
   },
   // Evitar errores de hidratación
   reactStrictMode: true,
+  // OCR del recibo (tesseract + sharp) en Server Actions
+  experimental: {
+    serverComponentsExternalPackages: ['tesseract.js', 'sharp'],
+    serverActions: {
+      bodySizeLimit: '12mb',
+    },
+  },
   // Headers de seguridad
   async headers() {
     return [

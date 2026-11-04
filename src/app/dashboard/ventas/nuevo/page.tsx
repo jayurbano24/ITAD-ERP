@@ -1,6 +1,6 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   AlertTriangle,
@@ -24,22 +24,48 @@ import { cn } from '@/lib/utils'
 import {
   searchAssetsForSale,
   searchCustomers,
+  createCustomerQuick,
   processSale,
+  persistAssetRetailSalePrice,
+  getSalesOrderById,
   getRemarketingWarehouseStock,
-  getRemarketingPrice,
   type AssetForSale,
   type CartItem,
-  type Customer
+  type Customer,
+  type SalePaymentMethod,
 } from '../actions'
-
 import {
-  getCatalogBrands,
-  getCatalogModels,
-  getCatalogProductTypes,
-  type CatalogBrand,
-  type CatalogModel,
-  type CatalogProductType
-} from '@/app/dashboard/inventario/partes/actions'
+  printWarrantyPolicy,
+  buildWarrantyPayloadFromSaleOrder,
+} from '@/lib/ventas/printWarrantyPolicy'
+
+const PAYMENT_OPTIONS: { id: SalePaymentMethod; label: string }[] = [
+  { id: 'efectivo', label: 'Efectivo' },
+  { id: 'tarjeta', label: 'Tarjeta' },
+  { id: 'visacuota', label: 'Visacuota' },
+]
+
+const VISACUOTA_CUOTAS = [3, 6, 10, 12, 18, 24]
+const IVA_RATE = 0.12
+
+type ServiceLine = {
+  id: string
+  description: string
+  unitPrice: number
+  listedPrice: number
+  priceIncludesIva: boolean
+}
+
+/** Convierte precio digitado → base sin IVA para el carrito */
+function toBasePrice(price: number, includesIva: boolean): number {
+  const n = Math.max(0, Number(price) || 0)
+  if (!includesIva) return Math.round(n * 100) / 100
+  return Math.round((n / (1 + IVA_RATE)) * 100) / 100
+}
+
+function roundMoney(n: number): number {
+  return Math.round(n * 100) / 100
+}
 
 const assetTypeIcons: Record<string, React.ElementType> = {
   laptop: Laptop,
@@ -75,47 +101,42 @@ export default function NuevaVentaPage() {
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null)
   const [productQuery, setProductQuery] = useState('')
   const [productResults, setProductResults] = useState<AssetForSale[]>([])
+  const [showProductDropdown, setShowProductDropdown] = useState(false)
   const [cart, setCart] = useState<CartItem[]>([])
+  const productInputRef = useRef<HTMLInputElement | null>(null)
   const [searchingCustomers, setSearchingCustomers] = useState(false)
   const [searchingProducts, setSearchingProducts] = useState(false)
   const [isProcessing, setIsProcessing] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [success, setSuccess] = useState<{ orderId: string; orderNumber: string } | null>(null)
+  const [success, setSuccess] = useState<{ orderId: string; orderNumber: string; invoiceNumber?: string } | null>(null)
+  const [quickClientName, setQuickClientName] = useState('')
+  const [quickClientNit, setQuickClientNit] = useState('')
+  const [isClienteFinal, setIsClienteFinal] = useState(true)
+  const [paymentMethod, setPaymentMethod] = useState<SalePaymentMethod>('efectivo')
+  const [visacuotaCuotas, setVisacuotaCuotas] = useState(6)
+  const [savingQuickClient, setSavingQuickClient] = useState(false)
   const [remarketingCount, setRemarketingCount] = useState<number | null>(null)
   const [remarketingLoading, setRemarketingLoading] = useState(false)
   const [remarketingError, setRemarketingError] = useState<string | null>(null)
-  const [isCatalogModalOpen, setIsCatalogModalOpen] = useState(false)
-  const [catalogBrands, setCatalogBrands] = useState<CatalogBrand[]>([])
-  const [catalogModels, setCatalogModels] = useState<CatalogModel[]>([])
-  const [catalogProductTypes, setCatalogProductTypes] = useState<CatalogProductType[]>([])
-  const [catalogFiltersLoading, setCatalogFiltersLoading] = useState(false)
-  const [selectedBrandId, setSelectedBrandId] = useState<string | null>(null)
-  const [selectedModelId, setSelectedModelId] = useState<string | null>(null)
-  const [quantityForModal, setQuantityForModal] = useState(1)
-  const [serialNumbers, setSerialNumbers] = useState<string[]>([''])
-  const [modalError, setModalError] = useState<string | null>(null)
-  const [modalProcessing, setModalProcessing] = useState(false)
-  const [modalUnitPrice, setModalUnitPrice] = useState<number | null>(null)
-  const [priceLoading, setPriceLoading] = useState(false)
-  const [catalogPriceError, setCatalogPriceError] = useState<string | null>(null)
+  const [ivaPrompt, setIvaPrompt] = useState<{
+    asset: AssetForSale
+    inputPrice: number
+  } | null>(null)
+  const [serviceLines, setServiceLines] = useState<ServiceLine[]>([])
+  const [serviceName, setServiceName] = useState('')
+  const [serviceAmount, setServiceAmount] = useState('')
+  const [serviceIncludesIva, setServiceIncludesIva] = useState(false)
+  const [saleNotes, setSaleNotes] = useState('')
+  const [saleInvoiceNumber, setSaleInvoiceNumber] = useState('')
+  const [saleSatInvoiceNumber, setSaleSatInvoiceNumber] = useState('')
   const [saleDate, setSaleDate] = useState<Date | null>(null)
-  const [invoiceNumber, setInvoiceNumber] = useState<string>('')
-
-  const catalogProductTypeLookup = useMemo(
-    () => new Map(catalogProductTypes.map((type) => [type.id, type.name])),
-    [catalogProductTypes]
-  )
-
-  const filteredModelOptions = useMemo(
-    () => (selectedBrandId ? catalogModels.filter((model) => model.brand_id === selectedBrandId) : catalogModels),
-    [catalogModels, selectedBrandId]
-  )
-
-  const selectedModel = catalogModels.find((model) => model.id === selectedModelId) ?? null
-  const selectedBrand = catalogBrands.find((brand) => brand.id === selectedBrandId) ?? null
-  const selectedProductTypeName = selectedModel
-    ? selectedModel.product_type?.name ?? catalogProductTypeLookup.get(selectedModel.product_type_id ?? '') ?? '—'
-    : '—'
+  const [isNewClientOpen, setIsNewClientOpen] = useState(false)
+  const [newClientName, setNewClientName] = useState('')
+  const [newClientNit, setNewClientNit] = useState('')
+  const [newClientPhone, setNewClientPhone] = useState('')
+  const [newClientEmail, setNewClientEmail] = useState('')
+  const [savingClient, setSavingClient] = useState(false)
+  const [clientFormError, setClientFormError] = useState<string | null>(null)
 
   const formatCurrency = useCallback((value: number) =>
     value
@@ -131,7 +152,6 @@ export default function NuevaVentaPage() {
 
   useEffect(() => {
     setSaleDate(new Date())
-    setInvoiceNumber(`FACT-${Date.now().toString().slice(-8)}`)
   }, [])
 
   const fetchCustomers = useCallback(async (query: string) => {
@@ -165,10 +185,13 @@ export default function NuevaVentaPage() {
       if (clientError) {
         setError(clientError)
         setProductResults([])
+        setShowProductDropdown(false)
         return
       }
       const filteredData = (data ?? []).filter((asset) => !matchesHiddenModel(asset))
       setProductResults(filteredData)
+      // Autocomplete while typing; exact Enter uses tryAddSerialToCart
+      setShowProductDropdown(query.trim().length >= 2 && filteredData.length > 0)
     } catch (err) {
       console.error(err)
       setError('Error cargando equipos disponibles')
@@ -208,19 +231,6 @@ export default function NuevaVentaPage() {
   }, [productQuery, fetchProducts])
 
   useEffect(() => {
-    setSerialNumbers((prev) => {
-      const normalized = Math.max(1, Math.min(20, quantityForModal))
-      if (prev.length === normalized) {
-        return prev
-      }
-      if (prev.length > normalized) {
-        return prev.slice(0, normalized)
-      }
-      return [...prev, ...Array(normalized - prev.length).fill('')]
-    })
-  }, [quantityForModal])
-
-  useEffect(() => {
     let cancelled = false
 
     const loadRemarketingStock = async () => {
@@ -250,165 +260,205 @@ export default function NuevaVentaPage() {
     }
   }, [])
 
-  const loadCatalogFilters = useCallback(async () => {
-    if (catalogFiltersLoading) return
-    setCatalogFiltersLoading(true)
+  const addServiceLine = () => {
+    const description = serviceName.trim()
+    const listed = Math.max(0, Number(serviceAmount) || 0)
+    if (!description) {
+      setError('Escribe el nombre del servicio')
+      return
+    }
+    if (listed <= 0) {
+      setError('Ingresa un monto válido para el servicio')
+      return
+    }
+    const base = toBasePrice(listed, serviceIncludesIva)
+    setServiceLines((prev) => [
+      ...prev,
+      {
+        id: `svc-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        description,
+        unitPrice: base,
+        listedPrice: listed,
+        priceIncludesIva: serviceIncludesIva,
+      },
+    ])
+    setServiceName('')
+    setServiceAmount('')
+    setServiceIncludesIva(false)
+    setError(null)
+  }
+
+  const removeServiceLine = (id: string) => {
+    setServiceLines((prev) => prev.filter((s) => s.id !== id))
+  }
+
+  const handleCreateClient = async () => {
+    setClientFormError(null)
+    setSavingClient(true)
     try {
-      const [brandsRes, modelsRes, productTypesRes] = await Promise.all([
-        getCatalogBrands(),
-        getCatalogModels(),
-        getCatalogProductTypes()
-      ])
-
-      setCatalogBrands(brandsRes.data ?? [])
-      setCatalogModels(modelsRes.data ?? [])
-      setCatalogProductTypes(productTypesRes.data ?? [])
-
-      if (brandsRes.error || modelsRes.error || productTypesRes.error) {
-        setModalError('No se pudieron cargar los catálogos. Intenta nuevamente.')
+      const { data, error: createError } = await createCustomerQuick({
+        commercial_name: newClientName,
+        tax_id_nit: newClientNit,
+        phone: newClientPhone || null,
+        email: newClientEmail || null,
+      })
+      if (createError || !data) {
+        setClientFormError(createError || 'No se pudo crear el cliente')
+        return
       }
+      setSelectedCustomer(data)
+      setIsNewClientOpen(false)
+      setNewClientName('')
+      setNewClientNit('')
+      setNewClientPhone('')
+      setNewClientEmail('')
+    } finally {
+      setSavingClient(false)
+    }
+  }
+
+  const buildWarrantyPayload = useCallback(
+    (customer: Customer) => {
+      const soldAt = saleDate || new Date()
+      const warrantyEnd = new Date(soldAt)
+      warrantyEnd.setDate(warrantyEnd.getDate() + 90)
+      return {
+        customerName: customer.commercial_name,
+        taxId: customer.tax_id_nit,
+        phone: customer.phone,
+        email: customer.email,
+        saleDate: soldAt.toLocaleDateString('es-GT'),
+        deliveryDate: soldAt.toLocaleDateString('es-GT'),
+        warrantyEnd: warrantyEnd.toLocaleDateString('es-GT'),
+        items: cart.map((item) => ({
+          manufacturer: item.asset.manufacturer || '—',
+          model: item.asset.model || '—',
+          serialNumber: item.asset.serial_number || item.asset.internal_tag,
+          grade: item.asset.condition || 'Grade B',
+          specs: (item.asset.specsSummary || item.asset.asset_type || '').trim(),
+        })),
+        commentsDetail: saleNotes.trim() || null,
+      }
+    },
+    [cart, saleDate, saleNotes]
+  )
+
+  const handlePrintWarranty = async () => {
+    if (!selectedCustomer || !success) return
+    await printWarrantyPolicy(buildWarrantyPayload(selectedCustomer))
+  }
+
+  const saveQuickClientName = async () => {
+    const name = quickClientName.trim()
+    if (!name) {
+      setError('Escribe el nombre del cliente')
+      return
+    }
+    const nit = isClienteFinal ? 'CF' : quickClientNit.trim()
+    if (!isClienteFinal && !nit) {
+      setError('Ingresa el NIT del cliente o marca Cliente Final')
+      return
+    }
+    setSavingQuickClient(true)
+    setError(null)
+    try {
+      const { data, error: createError } = await createCustomerQuick({
+        commercial_name: name,
+        tax_id_nit: nit,
+      })
+      if (createError || !data) {
+        setError(createError || 'No se pudo guardar el cliente')
+        return
+      }
+      setSelectedCustomer(data)
+      setQuickClientName('')
+      setQuickClientNit('')
+    } finally {
+      setSavingQuickClient(false)
+    }
+  }
+
+  const resolveUnitPrice = useCallback((asset: AssetForSale) => {
+    if (asset.sales_price != null && Number.isFinite(Number(asset.sales_price)) && Number(asset.sales_price) > 0) {
+      return Math.round(Number(asset.sales_price) * 100) / 100
+    }
+    if (asset.cost_amount != null && Number(asset.cost_amount) > 0) {
+      return Math.round(Number(asset.cost_amount) * 1.3 * 100) / 100
+    }
+    return 100
+  }, [])
+
+  const openIvaPrompt = useCallback((asset: AssetForSale) => {
+    setError(null)
+    setIvaPrompt({ asset, inputPrice: resolveUnitPrice(asset) })
+    setProductResults((prev) => prev.filter((item) => item.id !== asset.id))
+    setShowProductDropdown(false)
+    setProductQuery('')
+  }, [resolveUnitPrice])
+
+  const confirmIvaPrompt = useCallback((includesIva: boolean) => {
+    if (!ivaPrompt) return
+    const listed = Math.max(0, Number(ivaPrompt.inputPrice) || 0)
+    const base = toBasePrice(listed, includesIva)
+    setCart((prev) => {
+      if (prev.some((item) => item.asset.id === ivaPrompt.asset.id)) return prev
+      return [
+        ...prev,
+        {
+          asset: ivaPrompt.asset,
+          unitPrice: base,
+          listedPrice: listed,
+          priceIncludesIva: includesIva,
+        },
+      ]
+    })
+    setIvaPrompt(null)
+    setError(null)
+    void persistAssetRetailSalePrice(ivaPrompt.asset.id, listed).catch((err) => {
+      console.warn('No se pudo guardar P. venta en inventario:', err)
+    })
+    productInputRef.current?.focus()
+  }, [ivaPrompt])
+
+  const tryAddSerialToCart = useCallback(async (raw: string) => {
+    const serial = raw.trim()
+    if (serial.length < 2) return false
+    setSearchingProducts(true)
+    try {
+      const { data, error: searchError } = await searchAssetsForSale(serial)
+      if (searchError) {
+        setError(searchError)
+        return false
+      }
+      const list = (data ?? []).filter((asset) => !matchesHiddenModel(asset))
+      const exact =
+        list.find((a) => a.serial_number?.toLowerCase() === serial.toLowerCase()) ||
+        (list.length === 1 ? list[0] : null)
+
+      if (exact) {
+        if (cart.some((item) => item.asset.id === exact.id)) {
+          setError(`El serial ${exact.serial_number} ya está en el carrito`)
+          setProductQuery('')
+          return true
+        }
+        openIvaPrompt(exact)
+        return true
+      }
+
+      setProductResults(list)
+      setShowProductDropdown(list.length > 0)
+      if (list.length === 0) {
+        setError(`No se encontró equipo listo para venta con serial "${serial}"`)
+      }
+      return list.length > 0
     } catch (err) {
       console.error(err)
-      setModalError('Error cargando los catálogos')
+      setError('Error buscando el equipo')
+      return false
     } finally {
-      setCatalogFiltersLoading(false)
+      setSearchingProducts(false)
     }
-  }, [catalogFiltersLoading])
-
-  useEffect(() => {
-    if (isCatalogModalOpen && !catalogFiltersLoading && catalogBrands.length === 0) {
-      loadCatalogFilters()
-    }
-  }, [isCatalogModalOpen, catalogFiltersLoading, catalogBrands.length, loadCatalogFilters])
-
-  useEffect(() => {
-    if (!selectedBrand || !selectedModel) {
-      setModalUnitPrice(null)
-      setCatalogPriceError(null)
-      return
-    }
-
-    let cancelled = false
-
-    const fetchPrice = async () => {
-      setPriceLoading(true)
-      try {
-        const { price, error } = await getRemarketingPrice({
-          manufacturer: selectedBrand.name,
-          model: selectedModel.name
-        })
-        if (!cancelled) {
-          setCatalogPriceError(error)
-          setModalUnitPrice(price)
-        }
-      } catch (err) {
-        console.error(err)
-        if (!cancelled) {
-          setCatalogPriceError('Error cargando el precio')
-          setModalUnitPrice(null)
-        }
-      } finally {
-        if (!cancelled) {
-          setPriceLoading(false)
-        }
-      }
-    }
-
-    fetchPrice()
-
-    return () => {
-      cancelled = true
-    }
-  }, [selectedBrand, selectedModel])
-
-  const resetCatalogForm = () => {
-    setSelectedBrandId(null)
-    setSelectedModelId(null)
-    setQuantityForModal(1)
-    setSerialNumbers([''])
-    setModalUnitPrice(null)
-    setCatalogPriceError(null)
-    setModalError(null)
-  }
-
-  const openCatalogModal = () => {
-    setModalError(null)
-    setIsCatalogModalOpen(true)
-  }
-
-  const closeCatalogModal = () => {
-    setIsCatalogModalOpen(false)
-    resetCatalogForm()
-  }
-
-  const handleQuantityInput = (value: number) => {
-    const normalized = Math.max(1, Math.min(20, Math.floor(value) || 1))
-    setQuantityForModal(normalized)
-  }
-
-  const updateSerialNumber = (index: number, value: string) => {
-    setSerialNumbers((prev) => {
-      const next = [...prev]
-      next[index] = value
-      return next
-    })
-  }
-
-  const handleModalConfirm = async () => {
-    setModalError(null)
-    if (!selectedBrand || !selectedModel) {
-      setModalError('Selecciona marca y modelo antes de continuar')
-      return
-    }
-    if (serialNumbers.some((serial) => !serial.trim())) {
-      setModalError('Ingresa todos los números de serie')
-      return
-    }
-
-    setModalProcessing(true)
-    try {
-      const assetsToAdd: AssetForSale[] = []
-      for (const serial of serialNumbers) {
-        const trimmed = serial.trim()
-        if (trimmed.length < 2) {
-          setModalError('El número de serie debe tener al menos dos caracteres')
-          return
-        }
-        const { data, error: searchError } = await searchAssetsForSale(trimmed)
-        if (searchError) {
-          setModalError(`Error buscando el serial ${trimmed}`)
-          return
-        }
-        const match = (data ?? []).find((asset) => {
-          const matchesSerial =
-            asset.serial_number?.toLowerCase() === trimmed.toLowerCase() ||
-            asset.internal_tag?.toLowerCase() === trimmed.toLowerCase()
-          const matchesBrand = asset.manufacturer?.toLowerCase() === selectedBrand.name.toLowerCase()
-          const matchesModel = asset.model?.toLowerCase() === selectedModel.name.toLowerCase()
-          return matchesSerial && matchesBrand && matchesModel
-        })
-        if (!match) {
-          setModalError(`No se encontró activo para el serial "${trimmed}"`)
-          return
-        }
-        assetsToAdd.push(match)
-      }
-
-      assetsToAdd.forEach(addToCart)
-      closeCatalogModal()
-    } finally {
-      setModalProcessing(false)
-    }
-  }
-
-  const addToCart = (asset: AssetForSale) => {
-    setCart((prev) => {
-      if (prev.some((item) => item.asset.id === asset.id)) return prev
-      const price = asset.sales_price ?? Math.round(asset.cost_amount * 1.3) ?? 100
-      return [...prev, { asset, unitPrice: Math.round(price) }]
-    })
-    setProductResults((prev) => prev.filter((item) => item.id !== asset.id))
-  }
+  }, [openIvaPrompt, cart])
 
   const removeFromCart = (assetId: string) => {
     const removedItem = cart.find((item) => item.asset.id === assetId)
@@ -424,49 +474,88 @@ export default function NuevaVentaPage() {
         item.asset.id === assetId
           ? {
             ...item,
-            unitPrice: Math.max(0, Math.round(price))
+            unitPrice: Math.max(0, roundMoney(price)),
+            listedPrice: Math.max(0, roundMoney(price)),
+            priceIncludesIva: false,
           }
           : item
       )
     )
   }
 
-  const subtotal = cart.reduce((sum, item) => sum + item.unitPrice, 0)
-  const iva = subtotal * 0.12
-  const totalWithIva = subtotal + iva
-  const modalSubtotal = (modalUnitPrice ?? 0) * quantityForModal
-  const modalIva = modalSubtotal * 0.12
-  const modalTotal = modalSubtotal + modalIva
+  const subtotal = roundMoney(
+    cart.reduce((sum, item) => sum + item.unitPrice, 0) +
+      serviceLines.reduce((sum, item) => sum + item.unitPrice, 0)
+  )
+  const iva = roundMoney(subtotal * IVA_RATE)
+  const totalWithIva = roundMoney(subtotal + iva)
+  const lineCount = cart.length + serviceLines.length
 
   const handleProcessSale = async () => {
     if (!selectedCustomer) {
-      setError('Debe seleccionar un cliente')
+      setError('Agrega el nombre del cliente antes de finalizar')
       return
     }
-    if (cart.length === 0) {
-      setError('Agregue equipos al carrito')
+    if (lineCount === 0) {
+      setError('Agrega equipos o servicios al carrito')
       return
     }
 
     setError(null)
     setIsProcessing(true)
 
+    if (paymentMethod === 'visacuota' && (!visacuotaCuotas || visacuotaCuotas < 1)) {
+      setError('Selecciona el número de cuotas Visacuota')
+      return
+    }
+
     const result = await processSale({
       customerId: selectedCustomer.id,
-      cartItems: cart.map((item) => ({
-        assetId: item.asset.id,
-        unitPrice: item.unitPrice,
-        description: `${item.asset.manufacturer ?? ''} ${item.asset.model ?? ''} - ${item.asset.asset_type}`,
-        serialNumber: item.asset.serial_number,
-        conditionGrade: item.asset.condition
-      })),
-      warrantyDays: 30
+      cartItems: [
+        ...cart.map((item) => ({
+          assetId: item.asset.id,
+          unitPrice: item.unitPrice,
+          listedPrice: item.listedPrice ?? item.unitPrice,
+          priceIncludesIva: item.priceIncludesIva ?? false,
+          description: `${item.asset.manufacturer ?? ''} ${item.asset.model ?? ''} - ${item.asset.asset_type}`,
+          serialNumber: item.asset.serial_number,
+          conditionGrade: item.asset.condition,
+        })),
+        ...serviceLines.map((svc) => ({
+          assetId: null,
+          unitPrice: svc.unitPrice,
+          description: `Servicio: ${svc.description}`,
+          serialNumber: null,
+          conditionGrade: null,
+        })),
+      ],
+      warrantyDays: 90,
+      paymentMethod,
+      installments: paymentMethod === 'visacuota' ? visacuotaCuotas : undefined,
+      notes: saleNotes.trim() || undefined,
+      invoiceNumber: saleInvoiceNumber.trim() || undefined,
+      satInvoiceNumber: saleSatInvoiceNumber.trim() || undefined,
     })
 
     setIsProcessing(false)
 
     if (result.success && result.data) {
       setSuccess(result.data)
+      // Al cerrar la venta: descarga PDF de política de garantía (sin FACT/SO)
+      try {
+        const { getWarrantyPrintPayloadForOrder } = await import('../actions')
+        const { payload } = await getWarrantyPrintPayloadForOrder(result.data.orderId, {
+          registerIfMissing: true,
+        })
+        if (payload) {
+          await printWarrantyPolicy(payload)
+        } else {
+          await printWarrantyPolicy(buildWarrantyPayload(selectedCustomer))
+        }
+      } catch (pdfErr) {
+        console.error('Error generando PDF de garantía:', pdfErr)
+        setError('Venta guardada, pero no se pudo descargar el PDF de garantía. Usa “Reimprimir” en el detalle.')
+      }
       fetchProducts('')
     } else {
       setError(result.error || 'Error al procesar la venta')
@@ -477,17 +566,35 @@ export default function NuevaVentaPage() {
     setSuccess(null)
     setSelectedCustomer(null)
     setCart([])
+    setServiceLines([])
+    setSaleNotes('')
+    setSaleInvoiceNumber('')
+    setSaleSatInvoiceNumber('')
+    setServiceName('')
+    setServiceAmount('')
     setCustomerQuery('')
     setProductQuery('')
+    setQuickClientName('')
+    setQuickClientNit('')
+    setIsClienteFinal(true)
+    setPaymentMethod('efectivo')
+    setVisacuotaCuotas(6)
     fetchProducts('')
   }, [fetchProducts])
 
   const handleCustomerSelect = (customer: Customer) => {
     setSelectedCustomer(customer)
+    const nit = (customer.tax_id_nit || '').trim().toUpperCase()
+    setIsClienteFinal(nit === 'CF' || nit === 'C/F' || nit === 'CONSUMIDOR FINAL' || !nit)
     setShowCustomerDropdown(false)
     setCustomerQuery('')
     setCustomerResults([])
   }
+
+  const paymentLabel =
+    paymentMethod === 'visacuota'
+      ? `Visacuota · ${visacuotaCuotas} cuotas`
+      : PAYMENT_OPTIONS.find((p) => p.id === paymentMethod)?.label || paymentMethod
 
   if (success) {
     return (
@@ -501,12 +608,18 @@ export default function NuevaVentaPage() {
 
           <div className="bg-gray-50 dark:bg-surface-950/50 border border-gray-100 dark:border-surface-800 rounded-2xl p-8 mb-10 text-left space-y-4 shadow-sm">
             <div className="flex justify-between items-center">
-              <span className="text-gray-500 dark:text-surface-400 font-bold uppercase text-xs tracking-wider">Orden:</span>
-              <span className="text-gray-900 dark:text-white font-mono font-black text-lg">{success.orderNumber}</span>
-            </div>
-            <div className="flex justify-between items-center">
               <span className="text-gray-500 dark:text-surface-400 font-bold uppercase text-xs tracking-wider">Cliente:</span>
               <span className="text-gray-900 dark:text-white font-bold">{selectedCustomer?.commercial_name}</span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-gray-500 dark:text-surface-400 font-bold uppercase text-xs tracking-wider">Tipo:</span>
+              <span className="text-gray-900 dark:text-white font-bold">
+                {isClienteFinal ? 'Cliente Final (CF)' : `NIT ${selectedCustomer?.tax_id_nit || '—'}`}
+              </span>
+            </div>
+            <div className="flex justify-between items-center">
+              <span className="text-gray-500 dark:text-surface-400 font-bold uppercase text-xs tracking-wider">Pago:</span>
+              <span className="text-gray-900 dark:text-white font-bold">{paymentLabel}</span>
             </div>
             <div className="flex justify-between items-center">
               <span className="text-gray-500 dark:text-surface-400 font-bold uppercase text-xs tracking-wider">Items:</span>
@@ -524,19 +637,33 @@ export default function NuevaVentaPage() {
             </div>
           </div>
 
-          <div className="flex flex-col sm:flex-row gap-4 justify-center">
+          <div className="flex flex-col gap-3 justify-center">
             <button
-              onClick={() => router.push('/dashboard/ventas')}
-              className="flex-1 px-8 py-4 bg-gray-100 dark:bg-surface-800 hover:bg-gray-200 dark:hover:bg-surface-700 text-gray-900 dark:text-white rounded-2xl transition-all font-black uppercase tracking-widest text-xs"
+              onClick={handlePrintWarranty}
+              className="w-full px-8 py-4 bg-[#1e3a5f] hover:bg-[#274b7a] text-white font-black rounded-2xl transition-all uppercase tracking-widest text-xs"
             >
-              Ver Órdenes
+              Descargar política de garantía (PDF para firmar)
             </button>
             <button
-              onClick={resetSaleForm}
-              className="flex-1 px-8 py-4 bg-emerald-600 hover:bg-emerald-500 text-white font-black rounded-2xl transition-all shadow-xl shadow-emerald-600/20 uppercase tracking-widest text-xs"
+              onClick={() => router.push(`/dashboard/ventas/${success.orderId}`)}
+              className="w-full px-8 py-4 bg-emerald-600 hover:bg-emerald-500 text-white font-black rounded-2xl transition-all shadow-xl shadow-emerald-600/20 uppercase tracking-widest text-xs"
             >
-              Nueva Venta
+              Cerrar factura · Ver detalle
             </button>
+            <div className="flex flex-col sm:flex-row gap-4">
+              <button
+                onClick={() => router.push('/dashboard/ventas')}
+                className="flex-1 px-8 py-4 bg-gray-100 dark:bg-surface-800 hover:bg-gray-200 dark:hover:bg-surface-700 text-gray-900 dark:text-white rounded-2xl transition-all font-black uppercase tracking-widest text-xs"
+              >
+                Historial de ventas
+              </button>
+              <button
+                onClick={resetSaleForm}
+                className="flex-1 px-8 py-4 border border-emerald-600 text-emerald-700 dark:text-emerald-400 font-black rounded-2xl transition-all uppercase tracking-widest text-xs"
+              >
+                Nueva Venta
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -560,11 +687,24 @@ export default function NuevaVentaPage() {
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-[400px_1fr] h-[calc(100vh-73px)]">
-        {/* Left Panel - Client Search & Catalog */}
+        {/* Left Panel - Cliente, serial y servicios */}
         <div className="bg-white dark:bg-surface-900 border-r border-gray-200 dark:border-surface-800 p-8 overflow-y-auto space-y-8 shadow-inner transition-all">
           {/* Client Search */}
           <div className="space-y-3">
-            <label className="block text-gray-500 dark:text-surface-400 text-xs font-black uppercase tracking-widest">Cliente</label>
+            <div className="flex items-center justify-between gap-2">
+              <label className="block text-gray-500 dark:text-surface-400 text-xs font-black uppercase tracking-widest">Cliente</label>
+              <button
+                type="button"
+                onClick={() => {
+                  setClientFormError(null)
+                  setIsNewClientOpen(true)
+                }}
+                className="inline-flex items-center gap-1 rounded-lg bg-emerald-600 px-2.5 py-1 text-[10px] font-black uppercase tracking-wide text-white"
+              >
+                <Plus className="h-3 w-3" />
+                Nuevo
+              </button>
+            </div>
             <div className="relative">
               <input
                 type="text"
@@ -604,29 +744,173 @@ export default function NuevaVentaPage() {
 
           {/* Serial/Model Search */}
           <div className="space-y-3">
-            <label className="block text-gray-500 dark:text-surface-400 text-xs font-black uppercase tracking-widest">Escanear serial o buscar modelo</label>
+            <label className="block text-gray-500 dark:text-surface-400 text-xs font-black uppercase tracking-widest">
+              Escanear serial o buscar modelo
+            </label>
             <div className="relative">
               <input
+                ref={productInputRef}
                 type="text"
                 value={productQuery}
-                onChange={(e) => setProductQuery(e.target.value)}
-                placeholder="Buscar modelo o serial..."
-                className="w-full bg-gray-50 dark:bg-surface-950 border border-gray-200 dark:border-surface-700 rounded-2xl px-5 py-4 text-gray-900 dark:text-white text-sm placeholder:text-gray-400 dark:placeholder-surface-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all font-medium"
+                onChange={(e) => {
+                  setProductQuery(e.target.value)
+                  setShowProductDropdown(true)
+                  setError(null)
+                }}
+                onFocus={() => {
+                  if (productResults.length > 0) setShowProductDropdown(true)
+                }}
+                onKeyDown={async (e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault()
+                    await tryAddSerialToCart(productQuery)
+                    productInputRef.current?.focus()
+                  }
+                }}
+                placeholder="Escribe serial y Enter..."
+                className="w-full bg-gray-50 dark:bg-surface-950 border border-gray-200 dark:border-surface-700 rounded-2xl px-5 py-4 pr-12 text-gray-900 dark:text-white text-sm placeholder:text-gray-400 dark:placeholder-surface-500 focus:outline-none focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 transition-all font-medium font-mono"
+                autoComplete="off"
               />
-              <Search className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400 dark:text-surface-500" />
+              {searchingProducts ? (
+                <Loader2 className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-emerald-500 animate-spin" />
+              ) : (
+                <Search className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400 dark:text-surface-500" />
+              )}
+
+              {showProductDropdown && productResults.length > 0 && (
+                <div className="absolute z-50 w-full mt-2 bg-white dark:bg-surface-900 border border-gray-200 dark:border-surface-700 rounded-3xl shadow-2xl max-h-80 overflow-y-auto overflow-x-hidden animate-in fade-in slide-in-from-top-2 duration-200">
+                  {productResults.map((asset) => {
+                    const price = resolveUnitPrice(asset)
+                    const alreadyInCart = cart.some((item) => item.asset.id === asset.id)
+                    return (
+                      <button
+                        key={asset.id}
+                        type="button"
+                        disabled={alreadyInCart}
+                        onClick={() => {
+                          if (!alreadyInCart) openIvaPrompt(asset)
+                        }}
+                        className={cn(
+                          'w-full px-5 py-3.5 text-left border-b border-gray-100 dark:border-surface-800 last:border-0 transition-colors',
+                          alreadyInCart
+                            ? 'opacity-40 cursor-not-allowed'
+                            : 'hover:bg-emerald-50 dark:hover:bg-emerald-500/10'
+                        )}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="font-mono text-sm font-black text-emerald-600 dark:text-emerald-400 truncate">
+                              {asset.serial_number || asset.internal_tag}
+                            </div>
+                            <div className="text-xs font-bold text-gray-900 dark:text-white truncate mt-0.5">
+                              {[asset.manufacturer, asset.model].filter(Boolean).join(' · ') || 'Sin modelo'}
+                            </div>
+                            <div className="text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-surface-500 mt-0.5">
+                              {asset.condition || asset.asset_type || 'Equipo'}
+                              {alreadyInCart ? ' · En carrito' : ''}
+                            </div>
+                          </div>
+                          <div className="text-right shrink-0">
+                            <div className="text-sm font-black tabular-nums text-gray-900 dark:text-white">
+                              Q {formatCurrency(price)}
+                            </div>
+                            <div className="text-[10px] font-bold uppercase text-emerald-600 dark:text-emerald-400">
+                              {alreadyInCart ? 'Agregado' : 'Agregar'}
+                            </div>
+                          </div>
+                        </div>
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
             </div>
+            <p className="text-[10px] text-gray-400 dark:text-surface-500 font-medium px-1">
+              Escanea o escribe el serial y pulsa <span className="font-black text-emerald-600 dark:text-emerald-400">Enter</span> para facturar
+            </p>
           </div>
 
-          {/* Catalog Button */}
-          <button
-            onClick={openCatalogModal}
-            className="w-full bg-white dark:bg-surface-900 hover:bg-gray-50 dark:hover:bg-surface-800 text-gray-900 dark:text-white border-2 border-dashed border-gray-200 dark:border-surface-700 rounded-3xl px-6 py-8 text-sm font-black uppercase tracking-widest transition-all hover:border-emerald-500/50 hover:text-emerald-600 dark:hover:text-emerald-400 flex flex-col items-center gap-3 group"
-          >
-            <div className="p-3 bg-gray-50 dark:bg-surface-800 rounded-2xl group-hover:bg-emerald-50 dark:group-hover:bg-emerald-500/10 transition-colors">
-              <Package className="w-6 h-6 text-gray-400 dark:text-surface-400 group-hover:text-emerald-500 transition-colors" />
+          {/* Servicios con monto */}
+          <div className="rounded-3xl border-2 border-dashed border-gray-200 dark:border-surface-700 bg-white dark:bg-surface-900 p-4 space-y-3">
+            <p className="text-[10px] font-black uppercase tracking-widest text-gray-500 dark:text-surface-400">
+              Agregar servicio con monto
+            </p>
+            <input
+              value={serviceName}
+              onChange={(e) => setServiceName(e.target.value)}
+              placeholder="Ej. Instalación, Diagnóstico, Configuración…"
+              className="w-full rounded-xl border border-gray-200 dark:border-surface-700 bg-gray-50 dark:bg-surface-950 px-3 py-2.5 text-sm font-bold text-gray-900 dark:text-white"
+            />
+            <div className="flex gap-2">
+              <input
+                type="number"
+                min={0}
+                step="0.01"
+                value={serviceAmount}
+                onChange={(e) => setServiceAmount(e.target.value)}
+                placeholder="Monto Q"
+                className="flex-1 rounded-xl border border-gray-200 dark:border-surface-700 bg-gray-50 dark:bg-surface-950 px-3 py-2.5 text-sm font-black tabular-nums text-gray-900 dark:text-white"
+              />
+              <button
+                type="button"
+                onClick={addServiceLine}
+                className="rounded-xl bg-emerald-600 hover:bg-emerald-500 px-4 py-2 text-[10px] font-black uppercase tracking-wide text-white"
+              >
+                Agregar
+              </button>
             </div>
-            Agregar desde catálogo
-          </button>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => setServiceIncludesIva(true)}
+                className={cn(
+                  'px-2.5 py-1 rounded-lg text-[10px] font-black uppercase border',
+                  serviceIncludesIva
+                    ? 'bg-emerald-600 border-emerald-500 text-white'
+                    : 'bg-gray-50 dark:bg-surface-950 border-gray-300 dark:border-surface-600 text-gray-600 dark:text-surface-300'
+                )}
+              >
+                IVA incluido
+              </button>
+              <button
+                type="button"
+                onClick={() => setServiceIncludesIva(false)}
+                className={cn(
+                  'px-2.5 py-1 rounded-lg text-[10px] font-black uppercase border',
+                  !serviceIncludesIva
+                    ? 'bg-amber-600 border-amber-500 text-white'
+                    : 'bg-gray-50 dark:bg-surface-950 border-gray-300 dark:border-surface-600 text-gray-600 dark:text-surface-300'
+                )}
+              >
+                + IVA 12%
+              </button>
+            </div>
+            {serviceLines.length > 0 && (
+              <div className="space-y-1.5 pt-1">
+                {serviceLines.map((svc) => (
+                  <div
+                    key={svc.id}
+                    className="flex items-center justify-between gap-2 rounded-xl bg-emerald-50/60 dark:bg-emerald-500/10 px-3 py-2"
+                  >
+                    <div className="min-w-0">
+                      <p className="text-xs font-bold text-gray-900 dark:text-white truncate">{svc.description}</p>
+                      <p className="text-[10px] text-gray-500 dark:text-surface-400">
+                        Q{formatCurrency(svc.unitPrice)}
+                        {svc.priceIncludesIva ? ' · base c/IVA' : ' · +IVA'}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => removeServiceLine(svc.id)}
+                      className="p-1.5 text-rose-500 hover:bg-rose-50 dark:hover:bg-rose-500/10 rounded-lg"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
 
           {/* Stock Info */}
           <div className="p-5 bg-gray-50 dark:bg-surface-950/50 rounded-3xl border border-gray-100 dark:border-surface-800 shadow-sm space-y-1 transition-all">
@@ -658,11 +942,7 @@ export default function NuevaVentaPage() {
                   <div className="text-gray-500 dark:text-surface-400 text-sm font-medium">{selectedCustomer.tax_id_nit}</div>
                 )}
               </div>
-              <div className="text-right grid grid-cols-2 md:grid-cols-1 gap-x-8 gap-y-2">
-                <div className="space-y-0.5">
-                  <div className="text-gray-400 dark:text-surface-500 text-[10px] font-bold uppercase tracking-widest">Factura</div>
-                  <div className="text-gray-900 dark:text-white font-mono font-black text-sm">{invoiceNumber || '...'}</div>
-                </div>
+              <div className="text-right">
                 <div className="space-y-0.5">
                   <div className="text-gray-400 dark:text-surface-500 text-[10px] font-bold uppercase tracking-widest">Fecha y Hora</div>
                   <div className="text-gray-900 dark:text-white font-black text-sm tabular-nums">
@@ -675,7 +955,7 @@ export default function NuevaVentaPage() {
 
           {/* Cart Table */}
           <div className="flex-1 overflow-y-auto p-8">
-            {cart.length === 0 ? (
+            {lineCount === 0 ? (
               <div className="flex flex-col items-center justify-center h-full text-gray-400 dark:text-surface-700 space-y-6">
                 <div className="p-8 bg-gray-50 dark:bg-surface-900 rounded-full shadow-inner animate-pulse">
                   <ShoppingCart className="w-20 h-20 opacity-20" />
@@ -697,7 +977,7 @@ export default function NuevaVentaPage() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-50 dark:divide-surface-800">
-                    {cart.map((item, idx) => (
+                    {cart.map((item) => (
                       <tr key={item.asset.id} className="hover:bg-gray-50 dark:hover:bg-surface-800/50 transition-colors group">
                         <td className="px-6 py-5 text-gray-900 dark:text-white font-bold truncate">{item.asset.manufacturer || '-'}</td>
                         <td className="px-6 py-5 text-gray-900 dark:text-white font-black truncate">{item.asset.model || '-'}</td>
@@ -708,12 +988,48 @@ export default function NuevaVentaPage() {
                         <td className="px-6 py-5">
                           <code className="text-emerald-600 dark:text-emerald-400 font-mono font-bold text-xs bg-emerald-50 dark:bg-emerald-500/10 px-2 py-1 rounded-md">{item.asset.serial_number || item.asset.internal_tag}</code>
                         </td>
-                        <td className="px-6 py-5 text-right text-gray-900 dark:text-white font-black tabular-nums">
-                          Q{item.unitPrice.toLocaleString('es-GT', { minimumFractionDigits: 2 })}
+                        <td className="px-6 py-5 text-right">
+                          <div className="text-gray-900 dark:text-white font-black tabular-nums">
+                            Q{item.unitPrice.toLocaleString('es-GT', { minimumFractionDigits: 2 })}
+                          </div>
+                          <div className="text-[9px] font-bold uppercase tracking-wide text-gray-400 dark:text-surface-500 mt-0.5">
+                            {item.priceIncludesIva
+                              ? `Base · de Q${(item.listedPrice ?? item.unitPrice).toLocaleString('es-GT', { minimumFractionDigits: 2 })} c/IVA`
+                              : 'Sin IVA · +12%'}
+                          </div>
                         </td>
                         <td className="px-6 py-5 text-center">
                           <button
                             onClick={() => removeFromCart(item.asset.id)}
+                            className="p-2 text-gray-300 dark:text-surface-600 hover:text-red-500 dark:hover:text-red-400 transition-all hover:bg-red-50 dark:hover:bg-red-500/10 rounded-xl"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                    {serviceLines.map((svc) => (
+                      <tr key={svc.id} className="hover:bg-gray-50 dark:hover:bg-surface-800/50 transition-colors group">
+                        <td className="px-6 py-5 text-gray-900 dark:text-white font-bold truncate">Servicio</td>
+                        <td className="px-6 py-5 text-gray-900 dark:text-white font-black truncate" colSpan={1}>{svc.description}</td>
+                        <td className="px-6 py-5">
+                          <span className="bg-emerald-100 dark:bg-emerald-500/20 px-2.5 py-1 rounded-lg text-emerald-700 dark:text-emerald-400 font-bold text-xs uppercase tracking-wider">Servicio</span>
+                        </td>
+                        <td className="px-6 py-5 text-center text-gray-900 dark:text-white font-black">1</td>
+                        <td className="px-6 py-5 text-gray-400 dark:text-surface-500 text-xs font-bold">—</td>
+                        <td className="px-6 py-5 text-right">
+                          <div className="text-gray-900 dark:text-white font-black tabular-nums">
+                            Q{svc.unitPrice.toLocaleString('es-GT', { minimumFractionDigits: 2 })}
+                          </div>
+                          <div className="text-[9px] font-bold uppercase tracking-wide text-gray-400 dark:text-surface-500 mt-0.5">
+                            {svc.priceIncludesIva
+                              ? `Base · de Q${svc.listedPrice.toLocaleString('es-GT', { minimumFractionDigits: 2 })} c/IVA`
+                              : 'Sin IVA · +12%'}
+                          </div>
+                        </td>
+                        <td className="px-6 py-5 text-center">
+                          <button
+                            onClick={() => removeServiceLine(svc.id)}
                             className="p-2 text-gray-300 dark:text-surface-600 hover:text-red-500 dark:hover:text-red-400 transition-all hover:bg-red-50 dark:hover:bg-red-500/10 rounded-xl"
                           >
                             <Trash2 className="w-4 h-4" />
@@ -728,36 +1044,208 @@ export default function NuevaVentaPage() {
           </div>
 
           {/* Summary Footer */}
-          <div className="border-t border-gray-100 dark:border-surface-800 p-8 bg-white dark:bg-surface-900 shadow-[0_-20px_50px_-20px_rgba(0,0,0,0.1)] transition-all">
-            <div className="grid grid-cols-2 gap-x-12 gap-y-4 mb-8">
-              <div className="flex justify-between items-center text-sm font-bold uppercase tracking-wider text-gray-400 dark:text-surface-500">
-                <span>Subtotal ({cart.length} ítems):</span>
-                <span className="text-gray-900 dark:text-white font-black tabular-nums">Q{formatCurrency(subtotal)}</span>
+          <div className="border-t border-gray-100 dark:border-surface-800 p-4 md:p-5 bg-white dark:bg-surface-900 shadow-[0_-12px_40px_-16px_rgba(0,0,0,0.12)] transition-all">
+            <div className="grid grid-cols-2 gap-x-6 gap-y-2 mb-4">
+              <div className="flex justify-between items-center text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-surface-500">
+                <span>Subtotal ({lineCount})</span>
+                <span className="text-gray-900 dark:text-white font-black tabular-nums text-sm">Q{formatCurrency(subtotal)}</span>
               </div>
-              <div className="flex justify-between items-center text-sm font-bold uppercase tracking-wider text-gray-400 dark:text-surface-500">
-                <span>IVA (12%):</span>
-                <span className="text-emerald-600 dark:text-emerald-400 font-black tabular-nums">Q{formatCurrency(iva)}</span>
+              <div className="flex justify-between items-center text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-surface-500">
+                <span>IVA 12%</span>
+                <span className="text-emerald-600 dark:text-emerald-400 font-black tabular-nums text-sm">Q{formatCurrency(iva)}</span>
               </div>
-              <div className="col-span-2 pt-6 border-t border-gray-100 dark:border-surface-800 flex justify-between items-center">
-                <span className="text-3xl font-black text-gray-900 dark:text-white tracking-tighter">Total</span>
-                <span className="text-4xl font-black text-emerald-600 dark:text-emerald-400 tracking-tight tabular-nums animate-in fade-in zoom-in-95 duration-500">Q{formatCurrency(totalWithIva)}</span>
+              <div className="col-span-2 pt-2 border-t border-gray-100 dark:border-surface-800 flex justify-between items-center">
+                <span className="text-xl font-black text-gray-900 dark:text-white tracking-tight">Total</span>
+                <span className="text-2xl font-black text-emerald-600 dark:text-emerald-400 tabular-nums">Q{formatCurrency(totalWithIva)}</span>
+              </div>
+            </div>
+
+            <div className="mb-3 space-y-2.5 rounded-xl border border-gray-200 dark:border-surface-700 bg-gray-50 dark:bg-surface-950/60 p-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div>
+                  <p className="text-[9px] font-black uppercase tracking-widest text-gray-500 dark:text-surface-400 mb-1">
+                    Tipo de cliente
+                  </p>
+                  <div className="flex flex-wrap gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setIsClienteFinal(true)}
+                      className={cn(
+                        'px-2 py-1 rounded-md text-[10px] font-black uppercase tracking-wide border transition-colors',
+                        isClienteFinal
+                          ? 'bg-emerald-600 border-emerald-500 text-white'
+                          : 'bg-white dark:bg-surface-900 border-gray-300 dark:border-surface-600 text-gray-600 dark:text-surface-300'
+                      )}
+                    >
+                      CF
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setIsClienteFinal(false)}
+                      className={cn(
+                        'px-2 py-1 rounded-md text-[10px] font-black uppercase tracking-wide border transition-colors',
+                        !isClienteFinal
+                          ? 'bg-emerald-600 border-emerald-500 text-white'
+                          : 'bg-white dark:bg-surface-900 border-gray-300 dark:border-surface-600 text-gray-600 dark:text-surface-300'
+                      )}
+                    >
+                      NIT / Factura
+                    </button>
+                  </div>
+                </div>
+                <div>
+                  <p className="text-[9px] font-black uppercase tracking-widest text-gray-500 dark:text-surface-400 mb-1">
+                    Forma de pago
+                  </p>
+                  <div className="flex flex-wrap gap-1">
+                    {PAYMENT_OPTIONS.map((opt) => (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        onClick={() => setPaymentMethod(opt.id)}
+                        className={cn(
+                          'px-2 py-1 rounded-md text-[10px] font-black uppercase tracking-wide border transition-colors',
+                          paymentMethod === opt.id
+                            ? 'bg-blue-600 border-blue-500 text-white'
+                            : 'bg-white dark:bg-surface-900 border-gray-300 dark:border-surface-600 text-gray-600 dark:text-surface-300'
+                        )}
+                      >
+                        {opt.label}
+                      </button>
+                    ))}
+                    {paymentMethod === 'visacuota' && (
+                      <select
+                        value={visacuotaCuotas}
+                        onChange={(e) => setVisacuotaCuotas(Number(e.target.value))}
+                        className="h-7 rounded-md border border-gray-300 dark:border-surface-700 bg-white dark:bg-surface-950 px-1.5 text-[10px] font-bold text-gray-900 dark:text-white"
+                      >
+                        {VISACUOTA_CUOTAS.map((n) => (
+                          <option key={n} value={n}>
+                            {n} cuotas
+                          </option>
+                        ))}
+                      </select>
+                    )}
+                  </div>
+                </div>
+              </div>
+
+              {!selectedCustomer && (
+                <div className="space-y-2 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3">
+                  <p className="text-[10px] font-black uppercase tracking-widest text-amber-600 dark:text-amber-300">
+                    Agregar nombre de cliente
+                  </p>
+                  <div className="flex flex-col sm:flex-row gap-2">
+                    <input
+                      value={quickClientName}
+                      onChange={(e) => setQuickClientName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault()
+                          void saveQuickClientName()
+                        }
+                      }}
+                      placeholder="Nombre o razón social"
+                      className="flex-1 rounded-xl border border-gray-300 dark:border-surface-700 bg-white dark:bg-surface-950 px-3 py-2 text-sm font-bold text-gray-900 dark:text-white"
+                    />
+                    {!isClienteFinal && (
+                      <input
+                        value={quickClientNit}
+                        onChange={(e) => setQuickClientNit(e.target.value)}
+                        placeholder="NIT"
+                        className="sm:w-36 rounded-xl border border-gray-300 dark:border-surface-700 bg-white dark:bg-surface-950 px-3 py-2 text-sm font-bold text-gray-900 dark:text-white font-mono"
+                      />
+                    )}
+                    <button
+                      type="button"
+                      disabled={savingQuickClient || !quickClientName.trim()}
+                      onClick={() => void saveQuickClientName()}
+                      className="rounded-xl bg-amber-600 hover:bg-amber-500 disabled:opacity-50 px-4 py-2 text-xs font-black uppercase tracking-wide text-white"
+                    >
+                      {savingQuickClient ? '…' : 'Guardar'}
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-amber-700/80 dark:text-amber-200/70">
+                    {isClienteFinal
+                      ? 'Se guarda como Consumidor Final (CF).'
+                      : 'Se guarda con el NIT indicado para facturación.'}
+                  </p>
+                </div>
+              )}
+
+              {selectedCustomer && (
+                <div className="flex items-center justify-between gap-2 rounded-lg bg-emerald-500/10 border border-emerald-500/30 px-3 py-2">
+                  <div className="min-w-0">
+                    <p className="text-xs font-bold text-emerald-700 dark:text-emerald-300 truncate">
+                      {selectedCustomer.commercial_name}
+                    </p>
+                    <p className="text-[10px] font-mono text-emerald-600/80 dark:text-emerald-400/70">
+                      {selectedCustomer.tax_id_nit || 'CF'}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedCustomer(null)}
+                    className="text-[10px] font-black uppercase text-emerald-700 dark:text-emerald-300 hover:underline shrink-0"
+                  >
+                    Cambiar
+                  </button>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <div>
+                  <p className="text-[9px] font-black uppercase tracking-widest text-gray-500 dark:text-surface-400 mb-1">
+                    Invoice
+                  </p>
+                  <input
+                    value={saleInvoiceNumber}
+                    onChange={(e) => setSaleInvoiceNumber(e.target.value)}
+                    placeholder="Opcional · auto FACT-…"
+                    className="w-full rounded-lg border border-gray-300 dark:border-surface-700 bg-white dark:bg-surface-950 px-2.5 py-1.5 text-xs font-bold font-mono text-gray-900 dark:text-white"
+                  />
+                </div>
+                <div>
+                  <p className="text-[9px] font-black uppercase tracking-widest text-gray-500 dark:text-surface-400 mb-1">
+                    Factura SAT
+                  </p>
+                  <input
+                    value={saleSatInvoiceNumber}
+                    onChange={(e) => setSaleSatInvoiceNumber(e.target.value)}
+                    placeholder="Nº FEL / DTE SAT"
+                    className="w-full rounded-lg border border-sky-400/50 dark:border-sky-500/40 bg-white dark:bg-surface-950 px-2.5 py-1.5 text-xs font-bold font-mono text-gray-900 dark:text-white"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <p className="text-[9px] font-black uppercase tracking-widest text-gray-500 dark:text-surface-400 mb-1">
+                  Nota · detalle en política de garantía
+                </p>
+                <textarea
+                  value={saleNotes}
+                  onChange={(e) => setSaleNotes(e.target.value)}
+                  rows={3}
+                  placeholder="Ej.: rayón en tapa, tecla Fn floja, batería ~2 h, sin cargador original…"
+                  className="w-full rounded-lg border border-gray-300 dark:border-surface-700 bg-white dark:bg-surface-950 px-2.5 py-1.5 text-xs font-medium text-gray-900 dark:text-white resize-none"
+                />
               </div>
             </div>
 
             <button
               onClick={handleProcessSale}
-              disabled={cart.length === 0 || !selectedCustomer || isProcessing}
-              className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-100 dark:disabled:bg-surface-800 disabled:text-gray-400 dark:disabled:text-surface-600 disabled:cursor-not-allowed text-white py-5 rounded-3xl font-black uppercase text-sm tracking-[0.2em] transition-all shadow-2xl shadow-emerald-500/30 flex items-center justify-center gap-3 active:scale-[0.99]"
+              disabled={lineCount === 0 || !selectedCustomer || isProcessing}
+              className="w-full bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-100 dark:disabled:bg-surface-800 disabled:text-gray-400 dark:disabled:text-surface-600 disabled:cursor-not-allowed text-white py-3.5 rounded-2xl font-black uppercase text-xs tracking-[0.15em] transition-all shadow-lg shadow-emerald-500/25 flex items-center justify-center gap-2 active:scale-[0.99]"
             >
               {isProcessing ? (
                 <>
                   <Loader2 className="w-6 h-6 animate-spin" />
-                  Procesando venta...
+                  Cerrando factura...
                 </>
               ) : (
                 <>
                   <CheckCircle className="w-6 h-6" />
-                  Confirmar y Finalizar
+                  Finalizar venta · Descargar política PDF
                 </>
               )}
             </button>
@@ -772,184 +1260,146 @@ export default function NuevaVentaPage() {
         </div>
       </div>
 
-      {/* Catalog Modal */}
-      {isCatalogModalOpen && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-gray-900/80 backdrop-blur-md px-4"
-          onClick={closeCatalogModal}
-        >
-          <div
-            onClick={(event) => event.stopPropagation()}
-            className="w-full max-w-lg rounded-[2.5rem] border border-gray-100 dark:border-surface-800 bg-white dark:bg-surface-900 p-8 shadow-2xl animate-in zoom-in-95 fade-in duration-300"
-          >
-            <div className="flex items-center justify-between mb-8">
-              <div>
-                <h2 className="text-2xl font-black text-gray-900 dark:text-white tracking-tight">Agregar desde catálogo</h2>
-                <p className="text-gray-500 dark:text-surface-400 text-xs font-bold uppercase tracking-widest mt-1">Selecciona productos serializados</p>
-              </div>
-              <button className="p-2.5 bg-gray-50 dark:bg-surface-800 text-gray-400 dark:text-surface-400 hover:text-gray-900 dark:hover:text-white rounded-2xl transition-all" onClick={closeCatalogModal}>
-                <X className="w-6 h-6" />
+      {/* Nuevo cliente */}
+      {isNewClientOpen && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-4">
+          <div className="w-full max-w-md rounded-2xl border border-gray-300 bg-white shadow-2xl">
+            <div className="flex items-center justify-between border-b border-gray-200 bg-emerald-600 px-4 py-3 text-white">
+              <p className="text-sm font-black uppercase tracking-wide">Nuevo cliente</p>
+              <button type="button" onClick={() => setIsNewClientOpen(false)} className="rounded p-1 hover:bg-white/20">
+                <X className="h-4 w-4" />
               </button>
             </div>
-
-            {catalogFiltersLoading && (
-              <div className="flex items-center gap-3 mb-6 p-4 bg-emerald-50 dark:bg-emerald-500/10 rounded-2xl text-emerald-600 dark:text-emerald-400 font-bold text-sm">
-                <Loader2 className="h-5 w-5 animate-spin" />
-                Cargando marcas y modelos...
+            <div className="space-y-3 p-4 bg-white text-black">
+              <div>
+                <label className="mb-1 block text-[10px] font-black uppercase text-gray-800">Nombre o razón social</label>
+                <input
+                  value={newClientName}
+                  onChange={(e) => setNewClientName(e.target.value)}
+                  className="w-full rounded-lg border-2 border-gray-400 bg-white px-3 py-2 text-sm font-bold text-black"
+                  placeholder="Ej. Empresa SA"
+                />
               </div>
-            )}
-
-            <div className="space-y-6">
-              <div className="grid grid-cols-2 gap-4">
-                {/* Marca */}
-                <div className="space-y-2">
-                  <label className="block text-xs font-black uppercase tracking-widest text-gray-400 dark:text-surface-500">Marca</label>
-                  <select
-                    value={selectedBrandId ?? ''}
-                    onChange={(event) => {
-                      setSelectedBrandId(event.target.value || null)
-                      setSelectedModelId(null)
-                      setModalError(null)
-                    }}
-                    className="w-full rounded-2xl border border-gray-200 dark:border-surface-700 bg-gray-50 dark:bg-surface-950 px-4 py-3 text-gray-900 dark:text-white font-bold focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 focus:outline-none transition-all"
-                  >
-                    <option value="" disabled>Marca</option>
-                    {catalogBrands.map((brand) => (
-                      <option key={brand.id} value={brand.id}>
-                        {brand.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Modelo */}
-                <div className="space-y-2">
-                  <label className="block text-xs font-black uppercase tracking-widest text-gray-400 dark:text-surface-500">Modelo</label>
-                  <select
-                    value={selectedModelId ?? ''}
-                    onChange={(event) => setSelectedModelId(event.target.value || null)}
-                    disabled={!filteredModelOptions.length}
-                    className="w-full rounded-2xl border border-gray-200 dark:border-surface-700 bg-gray-50 dark:bg-surface-950 px-4 py-3 text-gray-900 dark:text-white font-black focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 focus:outline-none disabled:cursor-not-allowed disabled:opacity-50 transition-all"
-                  >
-                    <option value="" disabled>
-                      {filteredModelOptions.length ? 'Modelo' : 'Marca primero'}
-                    </option>
-                    {filteredModelOptions.map((model) => (
-                      <option key={model.id} value={model.id}>
-                        {model.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+              <div>
+                <label className="mb-1 block text-[10px] font-black uppercase text-gray-800">NIT</label>
+                <input
+                  value={newClientNit}
+                  onChange={(e) => setNewClientNit(e.target.value)}
+                  className="w-full rounded-lg border-2 border-gray-400 bg-white px-3 py-2 text-sm font-bold text-black"
+                  placeholder="CF o NIT"
+                />
               </div>
-
-              <div className="grid grid-cols-2 gap-4">
-                {/* Tipo de producto */}
-                <div className="space-y-2">
-                  <label className="block text-xs font-black uppercase tracking-widest text-gray-400 dark:text-surface-500">Tipo</label>
-                  <input
-                    readOnly
-                    type="text"
-                    value={selectedProductTypeName}
-                    className="w-full rounded-2xl border border-gray-200 dark:border-surface-700 bg-gray-100 dark:bg-surface-800/50 px-4 py-3 text-gray-500 dark:text-surface-400 font-bold"
-                  />
-                </div>
-
-                {/* Cantidad */}
-                <div className="space-y-2">
-                  <label className="block text-xs font-black uppercase tracking-widest text-gray-400 dark:text-surface-500">Cantidad</label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={20}
-                    value={quantityForModal}
-                    onChange={(event) => handleQuantityInput(Number(event.target.value))}
-                    className="w-full rounded-2xl border border-gray-200 dark:border-surface-700 bg-gray-50 dark:bg-surface-950 px-4 py-3 text-gray-900 dark:text-white font-black focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 focus:outline-none transition-all"
-                  />
-                </div>
+              <div>
+                <label className="mb-1 block text-[10px] font-black uppercase text-gray-800">Teléfono</label>
+                <input
+                  value={newClientPhone}
+                  onChange={(e) => setNewClientPhone(e.target.value)}
+                  className="w-full rounded-lg border-2 border-gray-400 bg-white px-3 py-2 text-sm font-bold text-black"
+                />
               </div>
-
-              {/* Precio unitario */}
-              <div className="rounded-3xl border-2 border-emerald-500/20 bg-emerald-50/30 dark:bg-emerald-500/5 p-6 space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-black uppercase tracking-widest text-emerald-600/50 dark:text-emerald-400/50">Estimación Precio Unitario</span>
-                  {priceLoading && <Loader2 className="h-4 w-4 animate-spin text-emerald-600 dark:text-emerald-400" />}
-                </div>
-                <p className="text-3xl font-black text-emerald-700 dark:text-emerald-400 tracking-tight tabular-nums">
-                  {priceLoading
-                    ? '...'
-                    : modalUnitPrice !== null
-                      ? `Q${formatCurrency(modalUnitPrice)}`
-                      : '—'}
-                </p>
-                {catalogPriceError && <p className="text-[10px] font-black uppercase text-amber-600 dark:text-amber-500 bg-amber-50 dark:bg-amber-500/10 px-2 py-1 rounded w-fit">{catalogPriceError}</p>}
+              <div>
+                <label className="mb-1 block text-[10px] font-black uppercase text-gray-800">Correo</label>
+                <input
+                  value={newClientEmail}
+                  onChange={(e) => setNewClientEmail(e.target.value)}
+                  className="w-full rounded-lg border-2 border-gray-400 bg-white px-3 py-2 text-sm font-bold text-black"
+                />
               </div>
-
-              {/* Números de serie */}
-              <div className="space-y-3">
-                <label className="block text-xs font-black uppercase tracking-widest text-gray-400 dark:text-surface-500">Números de Serie</label>
-                <div className="space-y-2 max-h-40 overflow-y-auto px-1">
-                  {serialNumbers.map((serial, index) => (
-                    <input
-                      key={index}
-                      value={serial}
-                      onChange={(event) => updateSerialNumber(index, event.target.value)}
-                      placeholder={`Serie ${index + 1}`}
-                      className="w-full rounded-xl border border-gray-200 dark:border-surface-700 bg-gray-50 dark:bg-surface-950 px-4 py-2.5 text-gray-900 dark:text-white font-mono text-sm focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500 focus:outline-none transition-all"
-                    />
-                  ))}
-                </div>
-              </div>
-
-              {/* Totales */}
-              <div className="rounded-[2rem] border border-gray-100 dark:border-surface-800 bg-gray-50/50 dark:bg-surface-950/50 p-6 space-y-3 shadow-inner">
-                <div className="flex items-center justify-between text-[10px] font-black uppercase tracking-widest text-gray-400 dark:text-surface-500">
-                  <span>Subtotal</span>
-                  <span className="text-gray-900 dark:text-white tabular-nums">Q{formatCurrency(modalSubtotal)}</span>
-                </div>
-                <div className="flex items-center justify-between text-[10px] font-black uppercase tracking-widest text-gray-400 dark:text-surface-500 pb-3 border-b border-gray-200 dark:border-surface-800">
-                  <span>IVA (12%)</span>
-                  <span className="text-gray-900 dark:text-white tabular-nums">Q{formatCurrency(modalIva)}</span>
-                </div>
-                <div className="flex items-center justify-between text-xl font-black text-gray-900 dark:text-white pt-1">
-                  <span className="tracking-tighter">Total</span>
-                  <span className="text-emerald-600 dark:text-emerald-400 tabular-nums tracking-tight">Q{formatCurrency(modalTotal)}</span>
-                </div>
-              </div>
-
-              {modalError && <div className="p-3 bg-red-50 dark:bg-red-500/10 border border-red-100 dark:border-red-500/30 rounded-xl text-red-600 dark:text-red-400 text-xs font-black text-center uppercase tracking-wider animate-shake">{modalError}</div>}
-
-              {/* Botones */}
-              <div className="flex items-center gap-4 pt-4">
+              {clientFormError && <p className="text-xs font-bold text-rose-700">{clientFormError}</p>}
+              <div className="flex justify-end gap-2 pt-2">
                 <button
-                  onClick={closeCatalogModal}
-                  className="flex-1 rounded-2xl border border-gray-200 dark:border-surface-700 px-6 py-4 text-xs font-black uppercase tracking-widest text-gray-500 dark:text-surface-400 hover:bg-gray-50 dark:hover:bg-surface-800 hover:border-gray-300 transition-all active:scale-95"
+                  type="button"
+                  onClick={() => setIsNewClientOpen(false)}
+                  className="rounded-lg border-2 border-gray-500 px-3 py-2 text-xs font-bold text-black"
                 >
                   Cancelar
                 </button>
                 <button
-                  onClick={handleModalConfirm}
-                  disabled={modalProcessing || priceLoading || !modalUnitPrice}
-                  className={cn(
-                    'flex-1 flex items-center justify-center gap-3 rounded-2xl px-6 py-4 text-xs font-black uppercase tracking-widest transition-all shadow-xl active:scale-95',
-                    modalProcessing || priceLoading || !modalUnitPrice
-                      ? 'bg-gray-100 dark:bg-surface-800 cursor-not-allowed text-gray-400 dark:text-surface-600 shadow-none'
-                      : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-emerald-500/20'
-                  )}
+                  type="button"
+                  disabled={savingClient}
+                  onClick={() => void handleCreateClient()}
+                  className="rounded-lg bg-emerald-600 px-4 py-2 text-xs font-black uppercase text-white disabled:opacity-50"
                 >
-                  {modalProcessing ? (
-                    <>
-                      <Loader2 className="h-5 w-5 animate-spin" />
-                      Procesando...
-                    </>
-                  ) : (
-                    <>
-                      <Plus className="w-5 h-5" />
-                      Agregar al carrito
-                    </>
-                  )}
+                  {savingClient ? 'Guardando…' : 'Guardar cliente'}
                 </button>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {ivaPrompt && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 p-4">
+          <div className="w-full max-w-md rounded-3xl border border-gray-200 dark:border-surface-700 bg-white dark:bg-surface-900 shadow-2xl overflow-hidden">
+            <div className="bg-emerald-700 px-6 py-4 text-white">
+              <p className="text-[10px] font-black uppercase tracking-widest opacity-80">Precio e IVA</p>
+              <p className="text-lg font-black truncate">
+                {ivaPrompt.asset.manufacturer} {ivaPrompt.asset.model}
+              </p>
+              <p className="font-mono text-sm opacity-90">
+                {ivaPrompt.asset.serial_number || ivaPrompt.asset.internal_tag}
+              </p>
+            </div>
+            <div className="p-6 space-y-4">
+              <div>
+                <label className="block text-[10px] font-black uppercase tracking-widest text-gray-500 dark:text-surface-400 mb-2">
+                  Precio a cobrar (Q)
+                </label>
+                <input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  autoFocus
+                  value={ivaPrompt.inputPrice}
+                  onChange={(e) =>
+                    setIvaPrompt((prev) =>
+                      prev
+                        ? { ...prev, inputPrice: Math.max(0, Number(e.target.value) || 0) }
+                        : prev
+                    )
+                  }
+                  className="w-full rounded-2xl border-2 border-emerald-500/40 bg-emerald-50/40 dark:bg-surface-950 px-4 py-3 text-2xl font-black text-gray-900 dark:text-white tabular-nums focus:outline-none focus:ring-2 focus:ring-emerald-500/30"
+                />
+                <p className="mt-2 text-[10px] font-bold text-emerald-700 dark:text-emerald-400/90">
+                  Este monto se guarda como precio de venta (P. base) en Bodega Remarketing.
+                </p>
+              </div>
+              <p className="text-xs font-bold text-gray-600 dark:text-surface-300">
+                ¿Este precio ya incluye IVA (12%)?
+              </p>
+              <div className="grid grid-cols-1 gap-2">
+                <button
+                  type="button"
+                  onClick={() => confirmIvaPrompt(true)}
+                  className="rounded-2xl bg-emerald-600 hover:bg-emerald-500 text-white px-4 py-3 text-left transition-colors"
+                >
+                  <span className="block text-sm font-black uppercase tracking-wide">Sí · IVA incluido</span>
+                  <span className="block text-[11px] opacity-90 mt-0.5">
+                    Total cliente Q{formatCurrency(ivaPrompt.inputPrice)} · base Q
+                    {formatCurrency(toBasePrice(ivaPrompt.inputPrice, true))} + IVA Q
+                    {formatCurrency(roundMoney(ivaPrompt.inputPrice - toBasePrice(ivaPrompt.inputPrice, true)))}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => confirmIvaPrompt(false)}
+                  className="rounded-2xl bg-amber-600 hover:bg-amber-500 text-white px-4 py-3 text-left transition-colors"
+                >
+                  <span className="block text-sm font-black uppercase tracking-wide">No · sumar IVA 12%</span>
+                  <span className="block text-[11px] opacity-90 mt-0.5">
+                    Base Q{formatCurrency(ivaPrompt.inputPrice)} + IVA Q
+                    {formatCurrency(roundMoney(ivaPrompt.inputPrice * IVA_RATE))} = Total Q
+                    {formatCurrency(roundMoney(ivaPrompt.inputPrice * (1 + IVA_RATE)))}
+                  </span>
+                </button>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIvaPrompt(null)}
+                className="w-full rounded-xl border border-gray-300 dark:border-surface-600 py-2.5 text-xs font-black uppercase tracking-wider text-gray-600 dark:text-surface-300"
+              >
+                Cancelar
+              </button>
             </div>
           </div>
         </div>

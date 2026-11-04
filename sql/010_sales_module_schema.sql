@@ -210,24 +210,33 @@
         FOR EACH ROW
         EXECUTE FUNCTION update_sales_order_timestamp();
 
-    -- Trigger para generar order_number
+    -- Trigger para generar order_number (formato SO-49265, sin año)
     CREATE OR REPLACE FUNCTION generate_order_number()
     RETURNS TRIGGER AS $$
     DECLARE
-        year_prefix TEXT;
         seq_num INTEGER;
     BEGIN
-        year_prefix := TO_CHAR(NOW(), 'YYYY');
-        
+        IF NEW.order_number IS NOT NULL AND btrim(NEW.order_number) <> '' THEN
+            RETURN NEW;
+        END IF;
+
         SELECT COALESCE(MAX(
-            CAST(SUBSTRING(order_number FROM 'SO-' || year_prefix || '-(\d+)') AS INTEGER)
+            CAST(
+                CASE
+                    WHEN order_number ~ '^SO-[0-9]+$'
+                        THEN substring(order_number from '^SO-([0-9]+)$')
+                    WHEN order_number ~ '^SO-[0-9]{4}-[0-9]+$'
+                        THEN substring(order_number from '^SO-[0-9]{4}-([0-9]+)$')
+                    ELSE NULL
+                END AS INTEGER
+            )
         ), 0) + 1
         INTO seq_num
         FROM sales_orders
-        WHERE order_number LIKE 'SO-' || year_prefix || '-%';
-        
-        NEW.order_number := 'SO-' || year_prefix || '-' || LPAD(seq_num::TEXT, 5, '0');
-        
+        WHERE order_number ~ '^SO-([0-9]{4}-)?[0-9]+$';
+
+        NEW.order_number := 'SO-' || LPAD(seq_num::TEXT, 5, '0');
+
         RETURN NEW;
     END;
     $$ LANGUAGE plpgsql;

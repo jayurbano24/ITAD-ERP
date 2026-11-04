@@ -110,15 +110,52 @@ export interface WorkOrderDetail extends Omit<WorkOrder, 'ticket'> {
 export async function getWorkOrders() {
   const supabase = await createClient()
 
-  const { data, error } = await supabase
+  // Preferir embed con FK; si PostgREST aún no ve la relación, caer a consulta sin technician
+  let { data, error } = await supabase
     .from('work_orders')
     .select(`
       *,
       asset:assets(id, internal_tag, serial_number, manufacturer, model, asset_type, color, batch_id, specifications),
-      technician:profiles!work_orders_technician_id_fkey(id, full_name),
+      technician:profiles!technician_id(id, full_name),
       part_requests(id, part_sku, part_name, quantity, status, created_at, dispatch_date, installed_at)
     `)
     .order('created_at', { ascending: false })
+
+  if (error && /relationship|schema cache|profiles/i.test(error.message)) {
+    console.warn('[getWorkOrders] embed profiles falló, reintentando sin technician:', error.message)
+    const fallback = await supabase
+      .from('work_orders')
+      .select(`
+        *,
+        asset:assets(id, internal_tag, serial_number, manufacturer, model, asset_type, color, batch_id, specifications),
+        part_requests(id, part_sku, part_name, quantity, status, created_at, dispatch_date, installed_at)
+      `)
+      .order('created_at', { ascending: false })
+    data = fallback.data
+    error = fallback.error
+
+    // Hidratar técnicos en segunda consulta
+    if (!error && data?.length) {
+      const techIds = Array.from(
+        new Set(
+          (data as Array<{ technician_id?: string | null }>)
+            .map((wo) => wo.technician_id)
+            .filter(Boolean) as string[]
+        )
+      )
+      if (techIds.length > 0) {
+        const { data: profiles } = await supabase
+          .from('profiles')
+          .select('id, full_name')
+          .in('id', techIds)
+        const techMap = new Map((profiles || []).map((p) => [p.id, p]))
+        data = (data as Array<Record<string, unknown>>).map((wo) => ({
+          ...wo,
+          technician: wo.technician_id ? techMap.get(wo.technician_id as string) || null : null,
+        }))
+      }
+    }
+  }
 
   // Obtener batch codes para los assets
   const batchIds = Array.from(new Set((data || []).map((wo: any) => wo.asset?.batch_id).filter(Boolean)))
@@ -178,7 +215,7 @@ export async function getWorkOrderById(id: string) {
         location,
         specifications
       ),
-      technician:profiles!work_orders_technician_id_fkey(id, full_name),
+      technician:profiles!technician_id(id, full_name),
       ticket:operations_tickets(
         id,
         ticket_number:readable_id,
@@ -813,7 +850,9 @@ async function moveAssetToRemarketing(
       .from('assets')
       .update({
         current_warehouse_id: destWarehouseId,
+        location: REMARKETING_WAREHOUSE_CODE,
         status: QC_READY_STATUS,
+        last_transfer_date: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       })
       .eq('id', asset.id)
@@ -959,6 +998,7 @@ export async function approveQcAndSendToRemarketing(workOrderId: string, options
   revalidatePath(`/dashboard/taller/${workOrderId}`)
   revalidatePath('/dashboard/taller')
   revalidatePath('/dashboard/inventario')
+  revalidatePath('/dashboard/inventario/bodega')
   revalidatePath('/dashboard/ventas')
 
   return { success: true }

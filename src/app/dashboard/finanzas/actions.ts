@@ -89,25 +89,26 @@ export interface Settlement {
 export async function getBatchesForSettlement() {
   const supabase = await createClient()
 
-  // Intentar usar la vista
+  // Vista (si existe y trae datos)
   const { data: viewData, error: viewError } = await supabase
     .from('batches_for_settlement')
     .select('*')
     .order('created_at', { ascending: false })
 
-  if (!viewError && viewData) {
-    return { data: viewData as BatchForSettlement[], error: null }
+  if (!viewError && Array.isArray(viewData) && viewData.length > 0) {
+    // Enriquecer ventas con montos reales de sales_orders (incluye IVA)
+    const enriched = await enrichBatchSalesFromOrders(supabase, viewData as BatchForSettlement[])
+    return { data: enriched, error: null }
   }
 
-  // Fallback: calcular manualmente
-  console.log('Vista no disponible, calculando manualmente...')
-
+  // Fallback: calcular desde batches + assets (schema real: sin client_reference)
   const { data: batches, error: batchError } = await supabase
     .from('batches')
     .select(`
       id,
       internal_batch_id,
-      client_reference,
+      description,
+      notes,
       status,
       received_units,
       created_at
@@ -119,7 +120,6 @@ export async function getBatchesForSettlement() {
     return { data: [], error: batchError.message }
   }
 
-  // Para cada lote, obtener estadísticas de assets
   const result: BatchForSettlement[] = []
 
   for (const batch of batches || []) {
@@ -130,26 +130,32 @@ export async function getBatchesForSettlement() {
 
     if (!assets || assets.length === 0) continue
 
-    const soldCount = assets.filter(a => a.status === 'sold').length
-    const scrappedCount = assets.filter(a => a.status === 'scrapped').length
-    const totalCost = assets.reduce((sum, a) => sum + (a.cost_amount || 0), 0)
+    const soldCount = assets.filter((a) => a.status === 'sold').length
+    const scrappedCount = assets.filter((a) => a.status === 'scrapped').length
+    const totalCost = assets.reduce((sum, a) => sum + Number(a.cost_amount || 0), 0)
     const totalSales = assets
-      .filter(a => a.status === 'sold')
-      .reduce((sum, a) => sum + (a.sales_price || 0), 0)
+      .filter((a) => a.status === 'sold')
+      .reduce((sum, a) => sum + Number(a.sales_price || 0), 0)
 
-    // Verificar si ya tiene liquidación
+    let settlementStatus: string | null = null
+    let hasSettlement = false
     const { data: settlement } = await supabase
       .from('settlements')
       .select('status')
       .eq('batch_id', batch.id)
       .order('created_at', { ascending: false })
       .limit(1)
-      .single()
+      .maybeSingle()
+
+    if (settlement) {
+      hasSettlement = true
+      settlementStatus = settlement.status
+    }
 
     result.push({
       id: batch.id,
       internal_batch_id: batch.internal_batch_id,
-      client_reference: batch.client_reference,
+      client_reference: batch.description || batch.notes || null,
       batch_status: batch.status,
       received_units: batch.received_units || 0,
       created_at: batch.created_at,
@@ -157,15 +163,74 @@ export async function getBatchesForSettlement() {
       sold_count: soldCount,
       scrapped_count: scrappedCount,
       pending_count: assets.length - soldCount - scrappedCount,
-      completion_pct: Math.round(((soldCount + scrappedCount) / assets.length) * 100 * 10) / 10,
+      completion_pct:
+        assets.length > 0
+          ? Math.round(((soldCount + scrappedCount) / assets.length) * 1000) / 10
+          : 0,
       total_cost: totalCost,
       total_sales: totalSales,
-      has_settlement: !!settlement,
-      settlement_status: settlement?.status || null
+      has_settlement: hasSettlement,
+      settlement_status: settlementStatus,
     })
   }
 
-  return { data: result, error: null }
+  const enriched = await enrichBatchSalesFromOrders(supabase, result)
+  return { data: enriched, error: null }
+}
+
+/** Sustituye ventas del lote por montos reales de facturas (incluye IVA). */
+async function enrichBatchSalesFromOrders(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  batches: BatchForSettlement[]
+): Promise<BatchForSettlement[]> {
+  if (batches.length === 0) return batches
+
+  const batchIds = batches.map((b) => b.id)
+  const { data: soldAssets } = await supabase
+    .from('assets')
+    .select('id, batch_id')
+    .in('batch_id', batchIds)
+    .eq('status', 'sold')
+
+  if (!soldAssets || soldAssets.length === 0) return batches
+
+  const assetToBatch = new Map(soldAssets.map((a) => [a.id, a.batch_id as string]))
+  const assetIds = soldAssets.map((a) => a.id)
+
+  const { data: items } = await supabase
+    .from('sales_order_items')
+    .select(`
+      asset_id,
+      unit_price,
+      order:sales_orders(status, subtotal, total_amount)
+    `)
+    .in('asset_id', assetIds)
+
+  const salesByBatch = new Map<string, number>()
+  for (const row of items || []) {
+    const batchId = assetToBatch.get(row.asset_id)
+    const order = row.order as unknown as {
+      status?: string
+      subtotal?: number
+      total_amount?: number
+    } | null
+    if (!batchId || order?.status === 'cancelled') continue
+
+    const unit = Number(row.unit_price || 0)
+    let amount = Math.round(unit * 1.12 * 100) / 100
+    if (order?.subtotal && Number(order.subtotal) > 0 && order.total_amount != null) {
+      amount = unit * (Number(order.total_amount) / Number(order.subtotal))
+    }
+    salesByBatch.set(batchId, (salesByBatch.get(batchId) || 0) + amount)
+  }
+
+  return batches.map((b) => {
+    const fromOrders = salesByBatch.get(b.id)
+    if (fromOrders != null && fromOrders > 0) {
+      return { ...b, total_sales: Math.round(fromOrders * 100) / 100 }
+    }
+    return b
+  })
 }
 
 // =====================================================
@@ -851,7 +916,7 @@ export async function getSettlementById(id: string) {
     .from('settlements')
     .select(`
       *,
-      batch:batches(internal_batch_id, client_reference, created_at),
+      batch:batches(internal_batch_id, description, notes, created_at),
       created_by_user:profiles!settlements_created_by_fkey(full_name),
       finalized_by_user:profiles!settlements_finalized_by_fkey(full_name)
     `)
@@ -872,36 +937,70 @@ export async function getSettlementById(id: string) {
 export async function getFinancialSummary() {
   const supabase = await createClient()
 
-  // Total de liquidaciones finalizadas
+  // Liquidaciones finalizadas (si existen)
   const { data: settlements } = await supabase
     .from('settlements')
-    .select('total_revenue, total_expenses, net_profit')
+    .select('total_revenue, total_expenses, net_profit, acquisition_cost')
     .eq('status', 'finalized')
 
-  const totalRevenue = settlements?.reduce((sum, s) => sum + (s.total_revenue || 0), 0) || 0
-  const totalExpenses = settlements?.reduce((sum, s) => sum + (s.total_expenses || 0), 0) || 0
-  const totalProfit = settlements?.reduce((sum, s) => sum + (s.net_profit || 0), 0) || 0
+  const settlementRevenue =
+    settlements?.reduce((sum, s) => sum + Number(s.total_revenue || 0), 0) || 0
+  const settlementExpenses =
+    settlements?.reduce(
+      (sum, s) => sum + Number(s.total_expenses || 0) + Number(s.acquisition_cost || 0),
+      0
+    ) || 0
 
-  // Ventas del mes actual
+  // Datos en vivo: costos de adquisición + ventas POS (sin depender de liquidar)
+  const { data: assets } = await supabase
+    .from('assets')
+    .select('cost_amount, status, sales_price')
+
+  const acquisitionCost =
+    assets?.reduce((sum, a) => sum + Number(a.cost_amount || 0), 0) || 0
+
+  const { data: expenseRows } = await supabase
+    .from('expense_ledger')
+    .select('amount, expense_type, status')
+    .in('status', ['approved', 'paid', 'pending'])
+
+  const operatingExpenses =
+    expenseRows
+      ?.filter((e) => e.expense_type !== 'acquisition')
+      .reduce((sum, e) => sum + Number(e.amount || 0), 0) || 0
+
+  const { data: allSales } = await supabase
+    .from('sales_orders')
+    .select('total_amount, status, created_at')
+    .neq('status', 'cancelled')
+
+  const liveRevenue =
+    allSales?.reduce((sum, s) => sum + Number(s.total_amount || 0), 0) || 0
+
   const startOfMonth = new Date()
   startOfMonth.setDate(1)
   startOfMonth.setHours(0, 0, 0, 0)
+  const monthRevenue =
+    allSales
+      ?.filter((s) => new Date(s.created_at) >= startOfMonth)
+      .reduce((sum, s) => sum + Number(s.total_amount || 0), 0) || 0
 
-  const { data: monthSales } = await supabase
-    .from('sales_orders')
-    .select('total_amount')
-    .eq('status', 'confirmed')
-    .gte('created_at', startOfMonth.toISOString())
-
-  const monthRevenue = monthSales?.reduce((sum, s) => sum + (s.total_amount || 0), 0) || 0
+  // Priorizar liquidaciones si hay; si no, P&L operativo en vivo
+  const totalRevenue = settlementRevenue > 0 ? settlementRevenue : liveRevenue
+  const totalExpenses =
+    settlementExpenses > 0 ? settlementExpenses : acquisitionCost + operatingExpenses
+  const totalProfit = totalRevenue - totalExpenses
 
   return {
     totalRevenue,
     totalExpenses,
     totalProfit,
     monthRevenue,
+    acquisitionCost,
+    operatingExpenses,
+    liveRevenue,
     settlementCount: settlements?.length || 0,
-    avgMargin: totalRevenue > 0 ? Math.round((totalProfit / totalRevenue) * 100) : 0
+    avgMargin: totalRevenue > 0 ? Math.round((totalProfit / totalRevenue) * 100) : 0,
   }
 }
 

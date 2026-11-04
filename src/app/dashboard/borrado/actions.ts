@@ -34,6 +34,47 @@ export interface WipeAsset {
   pdfEvidenceCount: number
 }
 
+/** Snapshot de reporte de borrado (Blancco / WipeDrive) para el certificado. */
+export interface WipeReportSnapshot {
+  make?: string | null
+  model?: string | null
+  serialNumber?: string | null
+  customerAssetTag?: string | null
+  mainBoardPart?: string | null
+  ramCapacityGb?: string | null
+  ramType?: string | null
+  cpu?: string | null
+  hddCount?: number | null
+  ssd?: string | null
+  screenSize?: string | null
+  powerOnOverHeat?: string | null
+  battery?: string | null
+  screen?: string | null
+  keyboard?: string | null
+  testDate?: string | null
+  technicianName?: string | null
+  comments?: string | null
+  errors?: string[]
+  processedTime?: string | null
+  software?: string | null
+  customerName?: string | null
+  reportUuid?: string | null
+  disks?: Array<{
+    index: number
+    vendor: string | null
+    model: string | null
+    serial: string | null
+    size: string | null
+    bus: string | null
+    wipeStatus: string | null
+    destruction: string | null
+    method: string | null
+    startEnd: string | null
+    duration: string | null
+    health: string | null
+  }>
+}
+
 export interface WipedAssetForCertificate {
   id: string
   internal_tag: string
@@ -44,7 +85,9 @@ export interface WipedAssetForCertificate {
   wipe_certificate_id: string | null
   wipe_software: string | null
   wipe_completed_at: string | null
+  wipe_notes: string | null
   client_name: string
+  wipe_report: WipeReportSnapshot | null
 }
 
 export type WipeEvidenceType = 'photo' | 'xml' | 'pdf'
@@ -382,17 +425,11 @@ export async function startWipeProcess(assetId: string): Promise<{ success: bool
 export async function certifyAsset(
   assetId: string,
   software: WipeSoftware,
-  externalReportId: string,
   result: WipeResult = 'success',
   notes?: string
 ): Promise<{ success: boolean; error: string | null }> {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
-
-  // Validaciones
-  if (!externalReportId || externalReportId.trim() === '') {
-    return { success: false, error: 'El ID del reporte externo es obligatorio para cumplir R2v3' }
-  }
 
   try {
     const { data: asset, error: fetchError } = await supabase
@@ -405,92 +442,54 @@ export async function certifyAsset(
       return { success: false, error: 'Activo no encontrado' }
     }
 
-    // Permitir certificar desde 'received' o 'wiping'
-    if (!['received', 'wiping'].includes(asset.status)) {
+    // Permitir certificar desde estados operativos de lab / recepción / taller
+    const certifiable = ['received', 'wiping', 'data_wipe', 'in_repair', 'diagnosing', 'wiped']
+    if (!certifiable.includes(asset.status)) {
       return { success: false, error: `El activo no puede ser certificado. Estado actual: ${asset.status}` }
     }
 
-    // Determinar nuevo estado basado en resultado
-    const newStatus = result === 'failed' ? 'received' : 'wiped'
+    const serialPart = (asset.serial_number || asset.internal_tag || assetId.slice(0, 8))
+      .toString()
+      .replace(/\s+/g, '')
+      .toUpperCase()
+    const stamp = new Date().toISOString().replace(/[-:TZ.]/g, '').slice(0, 14)
+    const certificateId = `WIPE-${serialPart}-${stamp}`
 
-    // Si el borrado fue exitoso, mover a Bodega Valorización (BOD-VAL)
-    let targetWarehouseId: string | null = null
-    if (result === 'success') {
-      const { data: valWarehouse, error: warehouseError } = await supabase
-        .from('warehouses')
-        .select('id, code, name')
-        .eq('code', 'BOD-VAL')
-        .maybeSingle()
+    if (result === 'failed') {
+      const { error: updateError } = await supabase
+        .from('assets')
+        .update({
+          status: 'received',
+          wipe_completed_at: new Date().toISOString(),
+          wipe_certificate_id: certificateId,
+          wipe_software: software,
+          wipe_result: result,
+          wipe_notes: notes?.trim() || null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', assetId)
 
-      if (warehouseError) {
-        console.error('[certifyAsset] Error buscando BOD-VAL:', warehouseError)
-      } else if (!valWarehouse) {
-        // Crear BOD-VAL si no existe
-        console.log('[certifyAsset] BOD-VAL no existe, creando...')
-        const { data: newWarehouse, error: createError } = await supabase
-          .from('warehouses')
-          .insert({
-            code: 'BOD-VAL',
-            name: 'Bodega de Valorización',
-            description: 'Equipos con borrado de datos certificado',
-            is_active: true
-          })
-          .select('id')
-          .single()
-
-        if (createError) {
-          console.error('[certifyAsset] Error creando BOD-VAL:', createError)
-        } else {
-          targetWarehouseId = newWarehouse.id
-          console.log('[certifyAsset] BOD-VAL creada:', targetWarehouseId)
-        }
-      } else {
-        targetWarehouseId = valWarehouse.id
-        console.log('[certifyAsset] BOD-VAL encontrada:', targetWarehouseId)
+      if (updateError) {
+        return { success: false, error: updateError.message }
       }
+    } else {
+      const { moveAssetToValorizacion } = await import('@/lib/wipe/moveToValorizacion')
+      const moved = await moveAssetToValorizacion(supabase, assetId, {
+        wipeSoftware: software,
+        wipeResult: result,
+        wipeNotes: notes?.trim() || null,
+        wipeCertificateId: certificateId,
+        performedBy: user?.id || null,
+      })
+      if (!moved.ok) {
+        return { success: false, error: moved.error || 'No se pudo mover a Valorización' }
+      }
+      console.log('[certifyAsset] Movido a BOD-VAL:', moved.warehouseId)
     }
-
-    // Actualizar activo con toda la información de borrado
-    const updatePayload: Record<string, any> = {
-      status: newStatus,
-      wipe_completed_at: new Date().toISOString(),
-      wipe_certificate_id: externalReportId.trim(),
-      wipe_software: software,
-      wipe_result: result,
-      wipe_notes: notes?.trim() || null,
-      updated_at: new Date().toISOString(),
-    }
-
-    // Si el borrado fue exitoso, actualizar la bodega
-    if (targetWarehouseId) {
-      updatePayload.current_warehouse_id = targetWarehouseId
-      console.log('[certifyAsset] Moviendo asset a BOD-VAL:', targetWarehouseId)
-    }
-
-    const { error: updateError } = await supabase
-      .from('assets')
-      .update(updatePayload)
-      .eq('id', assetId)
-
-    if (updateError) {
-      console.error('Error certifying asset:', updateError)
-      return { success: false, error: updateError.message }
-    }
-
-    // TODO: Registrar en audit_logs cuando la tabla esté configurada correctamente
-    console.log(`AUDIT: ${result === 'success' ? 'DATA_WIPE_CERTIFIED' : 'DATA_WIPE_FAILED'}`, {
-      asset_id: assetId,
-      internal_tag: asset.internal_tag,
-      certificate_id: externalReportId.trim(),
-      software: software,
-      result: result,
-      movedTo: targetWarehouseId ? 'BOD-VAL' : null,
-      performed_by: user?.id,
-      timestamp: new Date().toISOString()
-    })
 
     revalidatePath('/dashboard/borrado')
     revalidatePath('/dashboard/inventario/bodega')
+    revalidatePath('/dashboard/borrado/evidencias')
     return { success: true, error: null }
   } catch (err) {
     console.error('Unexpected error in certifyAsset:', err)
@@ -515,6 +514,8 @@ export async function getWipedAssets(dateFrom?: string): Promise<{ data: WipedAs
         wipe_certificate_id,
         wipe_software,
         wipe_completed_at,
+        wipe_notes,
+        specifications,
         batches (
           ticket_id
         )
@@ -537,6 +538,26 @@ export async function getWipedAssets(dateFrom?: string): Promise<{ data: WipedAs
       return { data: [], error: null }
     }
 
+    const assetIds = assets.map((a: { id: string }) => a.id)
+    const evidenceByAsset: Record<string, WipeReportSnapshot> = {}
+    if (assetIds.length > 0) {
+      const { data: evidenceRows } = await supabase
+        .from('asset_wipe_evidence')
+        .select('asset_id, parsed_json, type, created_at')
+        .in('asset_id', assetIds)
+        .eq('type', 'pdf')
+        .order('created_at', { ascending: false })
+
+      for (const row of evidenceRows || []) {
+        const aid = (row as { asset_id: string }).asset_id
+        if (evidenceByAsset[aid]) continue
+        const parsed = (row as { parsed_json?: WipeReportSnapshot | null }).parsed_json
+        if (parsed && typeof parsed === 'object') {
+          evidenceByAsset[aid] = parsed
+        }
+      }
+    }
+
     // Obtener nombres de clientes
     const ticketIds = Array.from(new Set(assets.map((a: any) => a.batches?.ticket_id).filter(Boolean)))
     let clientNames: Record<string, string> = {}
@@ -554,18 +575,30 @@ export async function getWipedAssets(dateFrom?: string): Promise<{ data: WipedAs
       }
     }
 
-    const transformedData: WipedAssetForCertificate[] = assets.map((asset: any) => ({
-      id: asset.id,
-      internal_tag: asset.internal_tag,
-      serial_number: asset.serial_number,
-      asset_type: asset.asset_type,
-      manufacturer: asset.manufacturer,
-      model: asset.model,
-      wipe_certificate_id: asset.wipe_certificate_id,
-      wipe_software: asset.wipe_software,
-      wipe_completed_at: asset.wipe_completed_at,
-      client_name: clientNames[asset.batches?.ticket_id] || 'N/A',
-    }))
+    const transformedData: WipedAssetForCertificate[] = assets.map((asset: any) => {
+      const specs = asset.specifications && typeof asset.specifications === 'object'
+        ? asset.specifications
+        : null
+      const fromSpecs = (specs?.wipe_report && typeof specs.wipe_report === 'object'
+        ? specs.wipe_report
+        : null) as WipeReportSnapshot | null
+      const wipe_report = fromSpecs || evidenceByAsset[asset.id] || null
+
+      return {
+        id: asset.id,
+        internal_tag: asset.internal_tag,
+        serial_number: asset.serial_number,
+        asset_type: asset.asset_type,
+        manufacturer: asset.manufacturer,
+        model: asset.model,
+        wipe_certificate_id: asset.wipe_certificate_id,
+        wipe_software: asset.wipe_software,
+        wipe_completed_at: asset.wipe_completed_at,
+        wipe_notes: asset.wipe_notes || null,
+        client_name: clientNames[asset.batches?.ticket_id] || wipe_report?.customerName || 'N/A',
+        wipe_report,
+      }
+    })
 
     return { data: transformedData, error: null }
   } catch (err) {

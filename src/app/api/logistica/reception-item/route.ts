@@ -72,32 +72,35 @@ export async function POST(request: Request) {
       resolvedType = data?.name || resolvedType
     }
 
-    // Actualizar el ticket_item con todos los campos de clasificación
+    // Solo columnas reales de ticket_items; specs extra van en reception_metadata
+    const receptionMetadata = {
+      color_detail: body.colorDetail || null,
+      processor: body.processor || null,
+      ram_capacity: body.ramCapacity || null,
+      ram_type: body.ramType || null,
+      disk_capacity: body.diskCapacity || null,
+      disk_type: body.diskType || null,
+      keyboard_type: body.keyboardType || null,
+      keyboard_version: body.keyboardVersion || null,
+      classification_rec: body.classificationRec || null,
+      bios_version: body.biosVersion || null,
+      observations: body.observations || null,
+    }
+
     const { error } = await supabase
       .from('ticket_items')
       .update({
         brand: resolvedBrand || null,
         model: resolvedModel || null,
         product_type: resolvedType || null,
-        brand_full: resolvedBrand || null,
-        model_full: resolvedModel || null,
         brand_id: body.brandId || null,
         model_id: body.modelId || null,
         product_type_id: body.productTypeId || null,
         collected_serial: body.collectedSerial || null,
-        color_detail: body.colorDetail || null,
-        processor: body.processor || null,
-        ram_capacity: body.ramCapacity || null,
-        ram_type: body.ramType || null,
-        disk_capacity: body.diskCapacity || null,
-        disk_type: body.diskType || null,
-        keyboard_type: body.keyboardType || null,
-        keyboard_version: body.keyboardVersion || null,
-        classification_rec: body.classificationRec || null,
+        color: body.colorDetail || null,
         classification_f: body.classificationF || null,
         classification_c: body.classificationC || null,
-        bios_version: body.biosVersion || null,
-        observations: body.observations || null,
+        reception_metadata: receptionMetadata,
         updated_at: new Date().toISOString()
       })
       .eq('id', body.itemId)

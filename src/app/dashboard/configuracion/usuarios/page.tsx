@@ -71,11 +71,19 @@ export default async function ConfiguracionUsuariosPage() {
           <div>
             <Text variant="h3" className="text-rose-600 dark:text-rose-400">Configuración Requerida</Text>
             <Text variant="muted" className="text-rose-600/80 dark:text-rose-400/80 mt-1 block">
-              Para crear usuarios, necesitas configurar <code className="bg-rose-500/20 px-1.5 py-0.5 rounded font-mono font-bold">SUPABASE_SERVICE_ROLE_KEY</code> en tu archivo <code className="bg-rose-500/20 px-1.5 py-0.5 rounded font-mono font-bold">.env.local</code>
+              La variable <code className="bg-rose-500/20 px-1.5 py-0.5 rounded font-mono font-bold">SUPABASE_SERVICE_ROLE_KEY</code> está vacía en <code className="bg-rose-500/20 px-1.5 py-0.5 rounded font-mono font-bold">.env.local</code>. Sin ella no se pueden crear ni editar usuarios de Auth.
             </Text>
             <Text variant="muted" className="text-rose-400/60 text-xs mt-3 block font-bold italic">
-              Encuéntrala en: Supabase Dashboard → Settings → API → service_role (secret)
+              Cópiala en: Supabase Dashboard → Project Settings → API → service_role (secret) → pégala en .env.local → reinicia el servidor
             </Text>
+            <a
+              href="https://supabase.com/dashboard/project/lgtpleuvpaohrrgdkkkx/settings/api"
+              target="_blank"
+              rel="noreferrer"
+              className="inline-block mt-3 text-xs font-black uppercase tracking-widest text-rose-300 hover:text-white underline underline-offset-4"
+            >
+              Abrir API keys del proyecto
+            </a>
           </div>
         </div>
       )}

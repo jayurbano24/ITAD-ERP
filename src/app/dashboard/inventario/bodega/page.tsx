@@ -1,21 +1,38 @@
 import { Package, ArrowLeft, Warehouse } from 'lucide-react'
 import Link from 'next/link'
-import { getWarehouseAssets, getWarehouses, type WarehouseAsset } from './actions'
+import {
+  getWarehouseAssets,
+  getWarehouses,
+  getRepairWarehouseBoard,
+  type WarehouseAsset,
+  type RepairStageKey,
+} from './actions'
+import { isPurchasedAsset } from '@/lib/wipe/isPurchasedAsset'
 import { formatBodegaDate } from '@/lib/formatBodegaDate'
 import WarehouseAssetTable from './components/WarehouseAssetTable'
 import ExcelExportButton from './components/ExcelExportButton'
-
-
+import RemarketingTabs, { type RemarketingTab } from './components/RemarketingTabs'
+import RepairStageTabs from './components/RepairStageTabs'
+import RepairStageBoard from './components/RepairStageBoard'
+import PurchaseLotForm from './components/PurchaseLotForm'
+import ProjectCostSummary, { type ProjectCostRow } from './components/ProjectCostSummary'
 
 type WarehouseFilterParams = {
   grade?: string
   warehouse?: string
   search?: string
+  tab?: string
 }
 
 export const dynamic = 'force-dynamic'
 
-type WorkshopClassifications = { rec?: string; c?: string; f?: string }
+type WorkshopClassifications = {
+  rec?: string
+  c?: string
+  f?: string
+  r2Applicability?: string
+  dataSanitization?: string
+}
 type HardwareSpecs = {
   processor?: string
   ram_capacity?: string
@@ -51,20 +68,31 @@ function getInputClassifications(asset: WarehouseAsset): WorkshopClassifications
   let rec: string | undefined
   let f: string | undefined
   let c: string | undefined
+  let r2Applicability: string | undefined
+  let dataSanitization: string | undefined
 
   if (specs?.workshop_classifications) {
     const wc = specs.workshop_classifications
     rec = wc.rec && wc.rec !== '$undefined' ? wc.rec : undefined
     f = wc.f && wc.f !== '$undefined' ? wc.f : undefined
     c = wc.c && wc.c !== '$undefined' ? wc.c : undefined
+    r2Applicability =
+      wc.r2_applicability && wc.r2_applicability !== '$undefined'
+        ? String(wc.r2_applicability)
+        : undefined
+    dataSanitization =
+      wc.data_sanitization && wc.data_sanitization !== '$undefined'
+        ? String(wc.data_sanitization)
+        : undefined
   }
 
-  // Fallback a otros campos si existen
   if (!rec && specs?.rec) rec = specs.rec
   if (!f && specs?.f) f = specs.f
   if (!c && specs?.c) c = specs.c
+  if (!r2Applicability && specs?.r2_applicability) r2Applicability = String(specs.r2_applicability)
+  if (!dataSanitization && specs?.data_sanitization) dataSanitization = String(specs.data_sanitization)
 
-  return { rec, f, c }
+  return { rec, f, c, r2Applicability, dataSanitization }
 }
 
 function getOutputClassifications(asset: WarehouseAsset): WorkshopClassifications {
@@ -112,8 +140,31 @@ export default async function BodegaPage({
 }: {
   searchParams: WarehouseFilterParams
 }) {
-  const { grade: gradeFilter, warehouse: warehouseFilter, search: searchTerm } = searchParams
-  const [allAssets, warehouses] = await Promise.all([getWarehouseAssets(), getWarehouses()])
+  const {
+    grade: gradeFilter,
+    warehouse: warehouseFilter,
+    search: searchTerm,
+    tab: tabParam,
+  } = searchParams
+  const isRemarketing = warehouseFilter === 'BOD-REM'
+  const isRepairWarehouse = warehouseFilter === 'BOD-REP'
+  const remTab: RemarketingTab =
+    tabParam === 'comprados'
+      ? 'comprados'
+      : tabParam === 'procesados'
+        ? 'procesados'
+        : 'venta'
+  const repairTab: RepairStageKey =
+    isRepairWarehouse &&
+    (tabParam === 'reparacion' || tabParam === 'control_calidad' || tabParam === 'diagnostico')
+      ? tabParam
+      : 'diagnostico'
+
+  const [allAssets, warehouses, repairBoard] = await Promise.all([
+    getWarehouseAssets(),
+    getWarehouses(),
+    isRepairWarehouse ? getRepairWarehouseBoard() : Promise.resolve(null),
+  ])
 
   const gradeOptions = ['A', 'B', 'C', 'D', 'F']
   const gradeLabels: Record<string, string> = {
@@ -124,12 +175,27 @@ export default async function BodegaPage({
     F: 'Scrap'
   }
 
+  const remAssets = isRemarketing
+    ? allAssets.filter((a) => a.warehouse_code === 'BOD-REM')
+    : []
+  /** Disponibles para venta (todo lo que está en BOD-REM y aún no vendido) */
+  const remForSaleCount = remAssets.length
+  const remPurchasedCount = remAssets.filter((a) => isPurchasedAsset(a)).length
+  /** Equipos que ya pasaron recepción/taller/QC (no lote de compra) */
+  const remProcessedCount = remAssets.filter((a) => !isPurchasedAsset(a)).length
+
   const filteredAssets = allAssets.filter((asset) => {
     if (gradeFilter && asset.condition_grade !== gradeFilter) {
       return false
     }
     if (warehouseFilter && asset.warehouse_code !== warehouseFilter) {
       return false
+    }
+    if (isRemarketing) {
+      const purchased = isPurchasedAsset(asset)
+      if (remTab === 'comprados' && !purchased) return false
+      if (remTab === 'procesados' && purchased) return false
+      // 'venta': muestra todos los disponibles en BOD-REM (comprados + procesados)
     }
     if (searchTerm) {
       const searchLower = searchTerm.toLowerCase()
@@ -182,32 +248,95 @@ export default async function BodegaPage({
     return acc
   }, {} as Record<string, { code: string | null; name: string | null; assets: WarehouseAssetRow[] }>)
 
-  const warehouseSections: WarehouseSection[] = Object.entries(assetsByWarehouse).map(([key, warehouse]) => {
-    const warehouseInfo = warehouses.find(w => w.code === warehouse.code)
-    return {
-      key,
-      code: warehouse.code,
-      name: warehouse.name,
-      status: warehouseInfo?.status || 'activa',
-      assets: warehouse.assets
+  const warehouseOrder = ['BOD-REC', 'BOD-REP', 'BOD-RPL', 'BOD-REM', 'BOD-VAL', 'BOD-HARV', 'BOD-DES']
+  const warehouseSections: WarehouseSection[] = Object.entries(assetsByWarehouse)
+    .map(([key, warehouse]) => {
+      const warehouseInfo = warehouses.find((w) => w.code === warehouse.code)
+      return {
+        key,
+        code: warehouse.code,
+        name: warehouse.name,
+        status: warehouseInfo?.status || 'activa',
+        assets: warehouse.assets,
+      }
+    })
+    .sort((a, b) => {
+      const ia = a.code ? warehouseOrder.indexOf(a.code) : 999
+      const ib = b.code ? warehouseOrder.indexOf(b.code) : 999
+      const oa = ia === -1 ? 500 : ia
+      const ob = ib === -1 ? 500 : ib
+      if (oa !== ob) return oa - ob
+      return (a.code || '').localeCompare(b.code || '')
+    })
+
+  const isGeneralInventory = !warehouseFilter
+  const warehouseSummary = warehouseSections.map((s) => ({
+    code: s.code || 'SIN',
+    name: s.name || warehouseNameMap[s.code || ''] || s.code || 'Sin bodega',
+    count: s.assets.length,
+  }))
+
+  const projectCostRows: ProjectCostRow[] = (() => {
+    if (!isRemarketing) return []
+    const byProject = new Map<string, { units: number; totalCost: number; totalSale: number }>()
+    for (const asset of filteredAssets) {
+      const specs = (asset.specifications ?? null) as Record<string, unknown> | null
+      const projectRaw =
+        specs?.project_number ?? specs?.invoice_ref ?? specs?.project_hash ?? null
+      const project =
+        projectRaw != null && String(projectRaw).trim() !== ''
+          ? String(projectRaw).trim()
+          : remTab === 'comprados' || remTab === 'venta'
+            ? 'Sin Project #'
+            : null
+      if (!project) continue
+      const cost = asset.cost_amount != null ? Number(asset.cost_amount) : 0
+      const sale = asset.sales_price != null ? Number(asset.sales_price) : 0
+      const prev = byProject.get(project) || { units: 0, totalCost: 0, totalSale: 0 }
+      prev.units += 1
+      prev.totalCost += Number.isFinite(cost) ? cost : 0
+      prev.totalSale += Number.isFinite(sale) ? sale : 0
+      byProject.set(project, prev)
     }
-  })
+    return Array.from(byProject.entries())
+      .map(([project, v]) => ({
+        project,
+        units: v.units,
+        totalCost: Math.round(v.totalCost * 100) / 100,
+        totalSale: Math.round(v.totalSale * 100) / 100,
+      }))
+      .sort((a, b) => a.project.localeCompare(b.project, 'es', { numeric: true }))
+  })()
 
   const warehouseNameMap: Record<string, string> = {
     'BOD-REC': 'Bodega Recepción',
+    'BOD-REP': 'Por Reparación',
+    'BOD-RPL': 'Bodega de Remplazo',
     'BOD-REM': 'Bodega Remarketing',
     'BOD-VAL': 'Bodega Valorización',
     'BOD-HARV': 'Bodega Hardvesting',
     'BOD-DES': 'Bodega Destrucción'
   }
 
+  const repairRowsForTab =
+    repairBoard?.rows.filter((row) => {
+      if (row.stage !== repairTab) return false
+      if (!searchTerm) return true
+      const q = searchTerm.toLowerCase()
+      return [row.serial, row.manufacturer, row.model, row.workOrderNumber]
+        .filter(Boolean)
+        .some((v) => String(v).toLowerCase().includes(q))
+    }) ?? []
+
   const headerWarehouse = warehouseFilter
     ? warehouses.find((warehouse) => warehouse.code === warehouseFilter)
     : undefined
-  const fallbackWarehouse = warehouses.find((warehouse) => warehouse.code === 'BOD-REC') || warehouses[0]
-  const currentWarehouse = headerWarehouse || fallbackWarehouse
-  const warehouseLabel = headerWarehouse?.name || (warehouseFilter && warehouseNameMap[warehouseFilter]) || currentWarehouse?.name || 'Bodega'
-  const warehouseCode = headerWarehouse?.code || currentWarehouse?.code || warehouseFilter || 'BODEGA'
+  const warehouseLabel = isGeneralInventory
+    ? 'Inventario General'
+    : headerWarehouse?.name || (warehouseFilter && warehouseNameMap[warehouseFilter]) || 'Bodega'
+  const warehouseCode = isGeneralInventory
+    ? 'TODAS'
+    : headerWarehouse?.code || warehouseFilter || 'BODEGA'
 
   const isFilterActive = Boolean(gradeFilter || searchTerm)
 
@@ -242,7 +371,13 @@ export default async function BodegaPage({
                   {warehouseCode}
                 </span>
                 <span className="text-gray-700 dark:text-gray-300 font-bold text-[11px] uppercase tracking-wider">
-                  {filteredAssets.length} equipos en almacenamiento
+                  {isRepairWarehouse
+                    ? `${repairBoard?.rows.length ?? 0} equipos en flujo de reparación`
+                    : isRemarketing
+                      ? `${remForSaleCount} disponibles para venta · ${remPurchasedCount} comprados · ${remProcessedCount} procesados`
+                      : isGeneralInventory
+                        ? `${filteredAssets.length} equipos en todas las bodegas`
+                        : `${filteredAssets.length} equipos en almacenamiento`}
                 </span>
               </div>
             </div>
@@ -257,6 +392,60 @@ export default async function BodegaPage({
           }}
         />
       </div>
+
+      {isGeneralInventory && warehouseSummary.length > 0 && (
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-2">
+          {warehouseSummary.map((w) => (
+            <Link
+              key={w.code}
+              href={`/dashboard/inventario/bodega?warehouse=${encodeURIComponent(w.code)}`}
+              className="rounded-xl border border-gray-200 dark:border-gray-800 bg-gray-50 dark:bg-[#1a1f2e] px-3 py-2.5 hover:border-indigo-400 dark:hover:border-indigo-500 transition-colors"
+            >
+              <p className="text-[10px] font-black uppercase tracking-wider text-indigo-600 dark:text-indigo-400">
+                {w.code}
+              </p>
+              <p className="text-xs font-bold text-gray-700 dark:text-gray-300 truncate">{w.name}</p>
+              <p className="text-lg font-black text-gray-900 dark:text-white tabular-nums">{w.count}</p>
+            </Link>
+          ))}
+        </div>
+      )}
+
+      {isRemarketing && (
+        <div className="space-y-4">
+          <RemarketingTabs
+            activeTab={remTab}
+            forSaleCount={remForSaleCount}
+            purchasedCount={remPurchasedCount}
+            processedCount={remProcessedCount}
+            search={searchTerm}
+          />
+          {remTab === 'comprados' && <PurchaseLotForm />}
+          {projectCostRows.length > 0 && (
+            <ProjectCostSummary
+              rows={projectCostRows}
+              title={
+                remTab === 'comprados'
+                  ? 'Total por Project · Equipos comprados'
+                  : remTab === 'procesados'
+                    ? 'Total por Project · Procesados'
+                    : 'Total por Project · Para venta'
+              }
+            />
+          )}
+        </div>
+      )}
+
+      {isRepairWarehouse && repairBoard && (
+        <div className="space-y-4">
+          <RepairStageTabs
+            activeTab={repairTab}
+            counts={repairBoard.counts}
+            search={searchTerm}
+          />
+          <RepairStageBoard rows={repairRowsForTab} stage={repairTab} />
+        </div>
+      )}
 
       <form
         className="bg-gray-50 dark:bg-[#1a1f2e] border border-gray-200 dark:border-gray-700 rounded-3xl p-6 grid grid-cols-1 md:grid-cols-4 gap-6 shadow-sm transition-all"
@@ -288,22 +477,41 @@ export default async function BodegaPage({
           <label className="text-gray-700 dark:text-gray-300 text-[10px] font-bold uppercase tracking-widest pl-1">
             Ubicación
           </label>
-          <div className="relative group opacity-60 cursor-not-allowed">
-            <input type="hidden" name="warehouse" value={warehouseFilter || ''} />
-            <select
-              name="warehouse_disabled"
-              defaultValue={warehouseFilter}
-              disabled
-              className="w-full bg-white dark:bg-[#0f1419] border-2 border-gray-100 dark:border-gray-800 rounded-2xl px-4 py-3 text-sm font-bold text-gray-900 dark:text-white appearance-none cursor-not-allowed"
-            >
-              <option value="">Todas las bodegas</option>
-              {warehouses.map((warehouse) => (
-                <option key={warehouse.id} value={warehouse.code}>
-                  {warehouse.code} - {warehouse.name}
-                </option>
-              ))}
-            </select>
-          </div>
+          {isGeneralInventory ? (
+            <div className="relative group">
+              <select
+                name="warehouse"
+                defaultValue={warehouseFilter || ''}
+                className="w-full bg-white dark:bg-[#0f1419] border-2 border-gray-100 dark:border-gray-800 rounded-2xl px-4 py-3 text-sm font-bold text-gray-900 dark:text-white appearance-none"
+              >
+                <option value="">Todas las bodegas</option>
+                {warehouses.map((warehouse) => (
+                  <option key={warehouse.id} value={warehouse.code}>
+                    {warehouse.code} - {warehouse.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          ) : (
+            <div className="relative group opacity-60 cursor-not-allowed">
+              <input type="hidden" name="warehouse" value={warehouseFilter || ''} />
+              {isRemarketing && <input type="hidden" name="tab" value={remTab} />}
+              {isRepairWarehouse && <input type="hidden" name="tab" value={repairTab} />}
+              <select
+                name="warehouse_disabled"
+                defaultValue={warehouseFilter}
+                disabled
+                className="w-full bg-white dark:bg-[#0f1419] border-2 border-gray-100 dark:border-gray-800 rounded-2xl px-4 py-3 text-sm font-bold text-gray-900 dark:text-white appearance-none cursor-not-allowed"
+              >
+                <option value="">Todas las bodegas</option>
+                {warehouses.map((warehouse) => (
+                  <option key={warehouse.id} value={warehouse.code}>
+                    {warehouse.code} - {warehouse.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
         </div>
 
         <div className="flex flex-col gap-2.5 md:col-span-1">
@@ -330,7 +538,17 @@ export default async function BodegaPage({
           </button>
           {isFilterActive && (
             <Link
-              href={`/dashboard/inventario/bodega${warehouseFilter ? `?warehouse=${warehouseFilter}` : ''}`}
+              href={`/dashboard/inventario/bodega${
+                warehouseFilter
+                  ? `?warehouse=${warehouseFilter}${
+                      isRemarketing
+                        ? `&tab=${remTab}`
+                        : isRepairWarehouse
+                          ? `&tab=${repairTab}`
+                          : ''
+                    }`
+                  : ''
+              }`}
               className="px-6 h-full flex items-center rounded-2xl border-2 border-gray-100 dark:border-gray-800 text-[10px] font-black uppercase tracking-widest text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-gray-800 transition-all"
             >
               Limpiar
@@ -339,16 +557,28 @@ export default async function BodegaPage({
         </div>
       </form>
 
-      <WarehouseAssetTable sections={warehouseSections} />
+      {!isRepairWarehouse && (
+        <WarehouseAssetTable sections={warehouseSections} unified={isGeneralInventory} />
+      )}
 
-      {filteredAssets.length === 0 && (
+      {!isRepairWarehouse && filteredAssets.length === 0 && (
         <div className="bg-gray-50 dark:bg-[#1a1f2e] border-2 border-dashed border-gray-200 dark:border-gray-800 rounded-[3rem] p-20 text-center">
           <div className="w-24 h-24 bg-white dark:bg-[#0f1419] rounded-[2.5rem] flex items-center justify-center mx-auto mb-6 shadow-sm border border-gray-100 dark:border-gray-800">
             <Package className="w-12 h-12 text-gray-300 dark:text-gray-600" />
           </div>
-          <h3 className="text-2xl font-black text-gray-900 dark:text-white mb-2 tracking-tight uppercase">No hay equipos en bodega</h3>
+          <h3 className="text-2xl font-black text-gray-900 dark:text-white mb-2 tracking-tight uppercase">
+            {remTab === 'comprados'
+              ? 'Sin equipos comprados'
+              : remTab === 'procesados'
+                ? 'Sin equipos procesados'
+                : 'No hay equipos para venta'}
+          </h3>
           <p className="text-gray-500 dark:text-gray-400 font-bold text-sm max-w-sm mx-auto leading-relaxed">
-            Los equipos aparecerán aquí cuando finalices la recepción de un lote o realices un traslado de inventario.
+            {remTab === 'comprados'
+              ? 'Registra un lote arriba (serie + costo c/u) para que aparezcan aquí en Remarketing.'
+              : remTab === 'procesados'
+                ? 'Aquí llegan equipos que ya pasaron recepción / taller / QC hacia Remarketing.'
+                : 'Los equipos listos para vender (comprados o ya procesados) aparecerán en esta pestaña.'}
           </p>
         </div>
       )}

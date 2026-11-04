@@ -1,8 +1,11 @@
 import { NextResponse } from 'next/server'
+import { revalidatePath } from 'next/cache'
 import { createAuditLog } from '@/lib/audit'
+import { createClient } from '@/lib/supabase/server'
 import { createClient as createSupabaseClient } from '@supabase/supabase-js'
 import { supabaseConfig } from '@/lib/supabase/config'
 import { FAILURE_TYPES } from '@/app/dashboard/taller/constants'
+import { setSession } from '@/lib/supabase/session'
 
 interface DiagnosisDetailPayload {
   code?: string | null
@@ -28,7 +31,20 @@ const warehouseCodeMap: Record<string, string> = {
   hardvesting: 'BOD-HARV',
   borrado: 'BOD-VAL',
   data_wipe: 'BOD-VAL',
-  destruccion: 'BOD-DES'
+  destruccion: 'BOD-DES',
+  diagnostico: 'BOD-REP',
+}
+
+async function getSupabaseClient() {
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim()
+  if (serviceRoleKey) {
+    return createSupabaseClient(supabaseConfig.url, serviceRoleKey)
+  }
+
+  // Fallback: sesión del usuario (mismo patrón que QC / send-to-control)
+  const supabase = await createClient()
+  await setSession(supabase)
+  return supabase
 }
 
 export async function POST(request: Request) {
@@ -41,24 +57,18 @@ export async function POST(request: Request) {
       diagnosisActionLabel: payload.diagnosisActionLabel,
       diagnosisActionKey: payload.diagnosisActionKey,
       hasComment: !!payload.diagnosisComment,
-      hasDetails: Array.isArray(payload.diagnosisDetails) && payload.diagnosisDetails.length > 0
+      hasDetails: Array.isArray(payload.diagnosisDetails) && payload.diagnosisDetails.length > 0,
     }))
 
     if (!workOrderId) {
       return NextResponse.json({ error: 'Falta la orden de trabajo' }, { status: 400 })
     }
 
-    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
-    if (!serviceRoleKey) {
-      console.error('[send-to-repair] Missing SUPABASE_SERVICE_ROLE_KEY')
-      return NextResponse.json({ error: 'Server configuration error' }, { status: 500 })
-    }
-
-    const supabase = createSupabaseClient(supabaseConfig.url, serviceRoleKey)
+    const supabase = await getSupabaseClient()
 
     const { data: workOrder, error: fetchError } = await supabase
       .from('work_orders')
-      .select('started_at, asset_id, work_order_number, status, ticket_id, current_warehouse_id')
+      .select('started_at, asset_id, work_order_number, status, ticket_id')
       .eq('id', workOrderId)
       .maybeSingle()
 
@@ -70,6 +80,17 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'Orden no encontrada' }, { status: 404 })
     }
 
+    // Bodega actual del activo (work_orders no siempre tiene current_warehouse_id)
+    let previousWarehouseId: string | null = null
+    if (workOrder.asset_id) {
+      const { data: assetRow } = await supabase
+        .from('assets')
+        .select('current_warehouse_id')
+        .eq('id', workOrder.asset_id)
+        .maybeSingle()
+      previousWarehouseId = assetRow?.current_warehouse_id ?? null
+    }
+
     const normalizedFailureType = sanitize(payload.failureType)
     let failureCategory = sanitize(payload.failureCategory)
     if (!failureCategory && normalizedFailureType) {
@@ -78,8 +99,8 @@ export async function POST(request: Request) {
 
     const normalizedDetails = Array.isArray(payload.diagnosisDetails)
       ? payload.diagnosisDetails
-        .map((detail) => ({ code: sanitize(detail.code), description: sanitize(detail.description) }))
-        .filter((detail) => detail.code || detail.description)
+          .map((detail) => ({ code: sanitize(detail.code), description: sanitize(detail.description) }))
+          .filter((detail) => detail.code || detail.description)
       : []
 
     const detailLines = normalizedDetails
@@ -95,8 +116,6 @@ export async function POST(request: Request) {
     const actionLabel = sanitize(payload.diagnosisActionLabel)
     const actionKey = sanitize(payload.diagnosisActionKey)
     const isDataWipeAction = actionKey === 'data_wipe'
-
-    console.log('[send-to-repair] actionLabel:', actionLabel, 'actionKey:', actionKey, 'isDataWipeAction:', isDataWipeAction)
 
     if (actionLabel) {
       sections.push(`Acción: ${actionLabel}`)
@@ -138,113 +157,93 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: updateError.message }, { status: 500 })
     }
 
-    // Obtener usuario
-    const { data: { user } } = await supabase.auth.getUser();
+    const {
+      data: { user },
+    } = await supabase.auth.getUser()
 
-    // Registrar auditoría en audit_logs usando la función centralizada
     try {
       await createAuditLog({
         action: 'STATUS_CHANGE',
-        module: 'TICKETS', // Or WORKSHOP
+        module: 'TICKETS',
         entityType: 'WORK_ORDER',
         entityId: workOrderId,
         entityReference: workOrder.work_order_number || workOrderId,
         description: 'Diagnóstico enviado a reparación: ' + (actionLabel || 'Sin acción específica'),
-        ticketId: workOrder.ticket_id, // If available in workOrder select
+        ticketId: workOrder.ticket_id,
         workOrderId: workOrderId,
         assetId: workOrder.asset_id,
         changes_summary: {
           status: { old: workOrder.status, new: updates.status },
-          diagnosis_action: { old: null, new: actionLabel }
+          diagnosis_action: { old: null, new: actionLabel },
         },
-        userInfo: user ? {
-          id: user.id,
-          email: user.email,
-          fullName: user.user_metadata?.full_name || user.email,
-          role: user.user_metadata?.role
-        } : undefined
-      });
+        userInfo: user
+          ? {
+              id: user.id,
+              email: user.email,
+              fullName: user.user_metadata?.full_name || user.email,
+              role: user.user_metadata?.role,
+            }
+          : undefined,
+      })
     } catch (auditError) {
-      console.error('Error registrando auditoría (diagnóstico):', auditError);
+      console.error('Error registrando auditoría (diagnóstico):', auditError)
     }
 
-    // Move asset to appropriate warehouse if diagnosisActionKey is provided
+    // Mover activo según acción (Hardvesting / Borrado / Destrucción / Por Reparación)
     if (actionKey && workOrder.asset_id) {
       const warehouseCode = warehouseCodeMap[actionKey]
-      console.log('[send-to-repair] Moving asset. actionKey:', actionKey, 'warehouseCode:', warehouseCode, 'asset_id:', workOrder.asset_id)
-
       if (warehouseCode) {
-        // Try to get warehouse, if not exists, create it
         let warehouseId: string | undefined
 
-        const { data: existingWarehouse, error: fetchWarehouseError } = await supabase
+        const { data: existingWarehouse } = await supabase
           .from('warehouses')
           .select('id')
           .eq('code', warehouseCode)
           .maybeSingle()
 
-        if (fetchWarehouseError && fetchWarehouseError.code !== 'PGRST116') {
-          console.error('[send-to-repair] Error fetching warehouse:', fetchWarehouseError)
-        }
-
         if (existingWarehouse?.id) {
-          console.log('[send-to-repair] Found existing warehouse:', warehouseCode, existingWarehouse.id)
           warehouseId = existingWarehouse.id
         } else {
-          console.log('[send-to-repair] Warehouse not found, creating new warehouse:', warehouseCode)
-          // Create warehouse if it doesn't exist
           const warehouseNames: Record<string, string> = {
             'BOD-HARV': 'Bodega Hardvesting',
             'BOD-DES': 'Bodega Destrucción',
-            'BOD-VAL': 'Bodega Valorización'
+            'BOD-VAL': 'Bodega Valorización',
+            'BOD-REP': 'Por Reparación',
           }
-          const warehouseDescriptions: Record<string, string> = {
-            'BOD-HARV': 'Equipos a despiezar',
-            'BOD-DES': 'Equipos para destrucción',
-            'BOD-VAL': 'Equipos valorización'
-          }
-
           const { data: newWarehouse, error: createError } = await supabase
             .from('warehouses')
             .insert({
               code: warehouseCode,
               name: warehouseNames[warehouseCode] || warehouseCode,
-              description: warehouseDescriptions[warehouseCode] || 'Bodega',
-              is_active: true
+              description: 'Bodega',
+              is_active: true,
             })
             .select('id')
             .single()
 
-          if (createError) {
-            console.error('[send-to-repair] Error creating warehouse:', createError)
-          } else if (newWarehouse?.id) {
-            console.log('[send-to-repair] Warehouse created:', warehouseCode, newWarehouse.id)
+          if (!createError && newWarehouse?.id) {
             warehouseId = newWarehouse.id
           }
         }
 
         if (warehouseId) {
-          console.log('[send-to-repair] Updating asset current_warehouse_id:', warehouseId)
           const { error: assetUpdateError } = await supabase
             .from('assets')
             .update({
               current_warehouse_id: warehouseId,
+              location: warehouseCode,
               updated_at: new Date().toISOString(),
             })
             .eq('id', workOrder.asset_id)
 
-          if (assetUpdateError) {
-            console.error('[send-to-repair] Error moving asset to warehouse:', assetUpdateError)
-          } else {
-            console.log('[send-to-repair] Asset successfully moved to warehouse:', warehouseCode)
-            // Obtener el nombre de la bodega
+          if (!assetUpdateError) {
             const { data: warehouseData } = await supabase
               .from('warehouses')
               .select('name')
               .eq('id', warehouseId)
-              .single();
-            const bodegaNombre = warehouseData?.name || warehouseCode;
-            // Registrar auditoría en audit_logs
+              .single()
+            const bodegaNombre = warehouseData?.name || warehouseCode
+
             await createAuditLog({
               action: 'MOVE',
               module: 'WAREHOUSE',
@@ -253,22 +252,26 @@ export async function POST(request: Request) {
               entityId: workOrder.asset_id,
               entityReference: workOrder.work_order_number || workOrderId,
               changes_summary: {
-                bodega: { old: workOrder.current_warehouse_id, new: bodegaNombre }
+                bodega: { old: previousWarehouseId, new: bodegaNombre },
               },
               assetId: workOrder.asset_id,
-              userInfo: user ? {
-                id: user.id,
-                email: user.email,
-                fullName: user.user_metadata?.full_name || user.email,
-                role: user.user_metadata?.role
-              } : undefined
-            });
+              userInfo: user
+                ? {
+                    id: user.id,
+                    email: user.email,
+                    fullName: user.user_metadata?.full_name || user.email,
+                    role: user.user_metadata?.role,
+                  }
+                : undefined,
+            })
           }
-        } else {
-          console.log('[send-to-repair] No warehouse ID available for asset movement')
         }
       }
     }
+
+    revalidatePath('/dashboard/taller')
+    revalidatePath(`/dashboard/taller/${workOrderId}`)
+    revalidatePath('/dashboard/inventario/bodega')
 
     return NextResponse.json({ success: true })
   } catch (error) {

@@ -8,6 +8,7 @@ import {
 import { getPendingWipeAssets, getWipeStats, getWipeStatusDetails, getWipedAssets } from './actions'
 import { WipeWorkstation } from './components/WipeWorkstation'
 import { CertificateGenerator } from './components/CertificateGenerator'
+import { CertificateIntake } from './components/CertificateIntake'
 import { StatsCardsClient } from './components/StatsCardsClient'
 import { createClient } from '@/lib/supabase/server'
 
@@ -151,7 +152,7 @@ export default function BorradoPage() {
                 </span>
               </h1>
               <p className="text-gray-600 dark:text-surface-400 mt-1">
-                Estación de trabajo para sanitización de datos certificada NIST 800-88
+                Captura evidencias de certificados de borrado y prepara reportes R2v3 / NIST 800-88
               </p>
             </div>
           </div>
@@ -163,6 +164,9 @@ export default function BorradoPage() {
         <Suspense fallback={<StatsLoading />}>
           <StatsCards />
         </Suspense>
+
+        {/* Captura PDF → Marca / Modelo / Serie / Borrado */}
+        <CertificateIntake />
 
         {/* Sección de Certificados */}
         <Suspense fallback={

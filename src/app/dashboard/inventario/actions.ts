@@ -37,7 +37,8 @@ export interface InventoryItem {
 // incluyendo los que están en Taller de Reparación (BOD-REP)
 
 // Estados que indican que el asset YA NO está en inventario (excluir del reporte)
-const EXCLUDED_STATUSES = ['scrapped', 'sold', 'destroyed']
+// "destroyed" vive en enum asset_status (migración add_destroyed_to_asset_status_enum)
+const EXCLUDED_STATUSES = ['scrapped', 'sold', 'destroyed'] as const
 
 // =====================================================
 // SERVER ACTION: getInventoryMaster

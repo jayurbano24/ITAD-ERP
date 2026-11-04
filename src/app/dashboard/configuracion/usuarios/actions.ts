@@ -10,8 +10,8 @@ import { revalidatePath } from 'next/cache'
 // =====================================================
 
 function getAdminClient() {
-  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL
-  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY
+  const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL
+  const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim()
 
   if (!supabaseUrl || !serviceRoleKey) {
     return null
@@ -26,7 +26,7 @@ function getAdminClient() {
 }
 
 function isAdminClientConfigured(): boolean {
-  return !!process.env.SUPABASE_SERVICE_ROLE_KEY
+  return Boolean(process.env.SUPABASE_SERVICE_ROLE_KEY?.trim())
 }
 
 // =====================================================
@@ -92,38 +92,35 @@ export async function getSystemUsers(): Promise<{ data: SystemUser[]; error: str
 
   const { data: profiles, error } = await supabase
     .from('profiles')
-    .select('id, full_name, role, is_active, created_at, avatar_url, allowed_modules, module_permissions')
+    .select('id, email, full_name, role, is_active, created_at, avatar_url, allowed_modules, module_permissions, last_login_at')
     .order('created_at', { ascending: false })
 
   if (error) {
     return { data: [], error: error.message }
   }
 
-  // Obtener emails de auth.users usando admin client
   const adminClient = getAdminClient()
+  let authUsers: { id: string; email?: string; last_sign_in_at?: string | null }[] = []
 
-  // Si no hay admin client, retornar usuarios sin emails
-  if (!adminClient) {
-    const usersWithoutEmail: SystemUser[] = (profiles || []).map(profile => ({
-      ...profile,
-      email: '(Configurar SERVICE_ROLE_KEY)',
-      last_sign_in_at: null
-    }))
-    return { data: usersWithoutEmail, error: null, needsConfig: true }
+  if (adminClient) {
+    const { data } = await adminClient.auth.admin.listUsers()
+    authUsers = data?.users || []
   }
 
-  const { data: authUsers } = await adminClient.auth.admin.listUsers()
-
-  const usersWithEmail: SystemUser[] = (profiles || []).map(profile => {
-    const authUser = authUsers?.users?.find(u => u.id === profile.id)
+  const usersWithEmail: SystemUser[] = (profiles || []).map((profile) => {
+    const authUser = authUsers.find((u) => u.id === profile.id)
     return {
       ...profile,
-      email: authUser?.email || 'Sin email',
-      last_sign_in_at: authUser?.last_sign_in_at || null
+      email: authUser?.email || profile.email || 'Sin email',
+      last_sign_in_at: authUser?.last_sign_in_at || profile.last_login_at || null,
     }
   })
 
-  return { data: usersWithEmail, error: null }
+  return {
+    data: usersWithEmail,
+    error: null,
+    needsConfig: !adminClient,
+  }
 }
 
 // =====================================================
@@ -169,6 +166,7 @@ export async function createSystemUser(data: CreateUserData) {
     .from('profiles')
     .insert({
       id: authUser.user.id,
+      email: data.email,
       full_name: data.fullName,
       role: data.role,
       is_active: true

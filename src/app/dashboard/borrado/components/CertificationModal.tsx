@@ -6,7 +6,6 @@ import {
   Shield,
   ShieldCheck,
   ShieldX,
-  FileCheck,
   Loader2,
   CheckCircle2,
   XCircle,
@@ -98,7 +97,6 @@ function detectReportEvidenceType(file: File): WipeEvidenceType | null {
 
 export function CertificationModal({ isOpen, onClose, asset, onComplete, mode }: CertificationModalProps) {
   const [software, setSoftware] = useState<WipeSoftware | ''>('')
-  const [externalReportId, setExternalReportId] = useState('')
   const [result, setResult] = useState<WipeResult>('success')
   const [notes, setNotes] = useState('')
   const [error, setError] = useState<string | null>(null)
@@ -111,6 +109,23 @@ export function CertificationModal({ isOpen, onClose, asset, onComplete, mode }:
   const [currentPhotoIndex, setCurrentPhotoIndex] = useState(0)
   const photoInputRef = useRef<HTMLInputElement>(null)
   const reportInputRef = useRef<HTMLInputElement>(null)
+
+  const removePhotoAt = (index: number) => {
+    setPhotoFiles((prev) => prev.filter((_, i) => i !== index))
+    setError(null)
+    if (photoInputRef.current) photoInputRef.current.value = ''
+    if (selectedPhotoPreview && currentPhotoIndex === index) {
+      setSelectedPhotoPreview(null)
+    } else if (currentPhotoIndex > index) {
+      setCurrentPhotoIndex((prev) => Math.max(0, prev - 1))
+    }
+  }
+
+  const removeReportAt = (index: number) => {
+    setReportFiles((prev) => prev.filter((_, i) => i !== index))
+    setError(null)
+    if (reportInputRef.current) reportInputRef.current.value = ''
+  }
 
   if (!isOpen) return null
 
@@ -138,17 +153,6 @@ export function CertificationModal({ isOpen, onClose, asset, onComplete, mode }:
     if (!software) {
       setError('Selecciona el software utilizado')
       return
-    }
-    if (!externalReportId.trim()) {
-      setError('El ID del reporte externo es obligatorio para cumplir R2v3')
-      return
-    }
-    // Hacer reportFiles opcional - solo advertencia si no hay
-    if (reportFiles.length === 0) {
-      const confirmCertify = window.confirm(
-        'No hay documento de reporte (PDF/XML) cargado. ¿Deseas continuar de todos modos?'
-      )
-      if (!confirmCertify) return
     }
 
     startTransition(async () => {
@@ -209,7 +213,6 @@ export function CertificationModal({ isOpen, onClose, asset, onComplete, mode }:
         const { success, error: apiError } = await certifyAsset(
           asset.id,
           software as WipeSoftware,
-          externalReportId.trim(),
           result,
           notes.trim() || undefined
         )
@@ -444,27 +447,6 @@ export function CertificationModal({ isOpen, onClose, asset, onComplete, mode }:
             </div>
           </div>
 
-          {/* ID del Reporte Externo */}
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-surface-300 flex items-center gap-2">
-              <FileCheck className="w-4 h-4 text-emerald-400" />
-              ID de Reporte / Licencia Externo <span className="text-red-400">*</span>
-            </label>
-            <input
-              type="text"
-              value={externalReportId}
-              onChange={(e) => setExternalReportId(e.target.value)}
-              placeholder="Ej: BLC-2025-0001234, KD-A1B2C3, PHYS-001"
-              className="w-full px-4 py-3 bg-surface-800 border border-surface-700 rounded-xl 
-                       text-white placeholder-surface-500 font-mono
-                       focus:outline-none focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20"
-              required
-            />
-            <p className="text-xs text-surface-500">
-              Este ID debe coincidir con el reporte generado por {software ? wipeSoftwareOptions.find(s => s.value === software)?.label : 'el software de borrado'}
-            </p>
-          </div>
-
           {/* Evidencia fotográfica y documental */}
           <div className="space-y-4">
             <div className="space-y-2">
@@ -479,14 +461,24 @@ export function CertificationModal({ isOpen, onClose, asset, onComplete, mode }:
                   multiple
                   accept="image/*"
                   onChange={(event) => {
-                    const files = Array.from(event.target.files || [])
-                    if (files.length > 5) {
-                      setError('Máximo 5 fotos permitidas. Solo se cargarán las primeras 5.')
-                      setPhotoFiles(files.slice(0, 5))
-                    } else {
-                      setError(null)
-                      setPhotoFiles(files)
+                    const incoming = Array.from(event.target.files || []).filter((f) =>
+                      f.type.startsWith('image/')
+                    )
+                    if (incoming.length === 0 && (event.target.files?.length || 0) > 0) {
+                      setError('Sube una imagen válida (JPG, PNG, WEBP o GIF)')
+                      event.target.value = ''
+                      return
                     }
+                    setPhotoFiles((prev) => {
+                      const merged = [...prev, ...incoming]
+                      if (merged.length > 5) {
+                        setError('Máximo 5 fotos permitidas. Solo se cargarán las primeras 5.')
+                        return merged.slice(0, 5)
+                      }
+                      setError(null)
+                      return merged
+                    })
+                    event.target.value = ''
                   }}
                   className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
                 />
@@ -515,31 +507,49 @@ export function CertificationModal({ isOpen, onClose, asset, onComplete, mode }:
                 <div className="space-y-3">
                   <div className="grid grid-cols-3 md:grid-cols-5 gap-2">
                     {photoFiles.map((file, idx) => (
-                      <button
-                        key={`${file.name}-${file.lastModified}`}
-                        type="button"
-                        onClick={() => {
-                          const reader = new FileReader()
-                          reader.onload = (e) => {
-                            setSelectedPhotoPreview(e.target?.result as string)
-                            setCurrentPhotoIndex(idx)
-                          }
-                          reader.readAsDataURL(file)
-                        }}
-                        className="p-2 bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 rounded-lg hover:bg-emerald-500/30 transition-colors text-xs font-medium flex items-center justify-center min-h-[40px]"
+                      <div
+                        key={`${file.name}-${file.lastModified}-${idx}`}
+                        className="relative group"
                       >
-                        📷 {idx + 1}
-                      </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            const reader = new FileReader()
+                            reader.onload = (e) => {
+                              setSelectedPhotoPreview(e.target?.result as string)
+                              setCurrentPhotoIndex(idx)
+                            }
+                            reader.readAsDataURL(file)
+                          }}
+                          className="w-full p-2 bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 rounded-lg hover:bg-emerald-500/30 transition-colors text-xs font-medium flex flex-col items-center justify-center min-h-[48px] gap-0.5"
+                          title={file.name}
+                        >
+                          <span>📷 {idx + 1}</span>
+                          <span className="truncate max-w-full text-[9px] text-emerald-400/70 px-1">{file.name}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => removePhotoAt(idx)}
+                          className="absolute -top-1.5 -right-1.5 z-10 flex h-5 w-5 items-center justify-center rounded-full bg-rose-600 text-white shadow hover:bg-rose-500"
+                          title={`Eliminar foto ${idx + 1}`}
+                          aria-label={`Eliminar foto ${idx + 1}`}
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
                     ))}
                   </div>
                   <button
                     type="button"
                     onClick={() => {
                       setPhotoFiles([])
+                      setSelectedPhotoPreview(null)
+                      setError(null)
                       if (photoInputRef.current) photoInputRef.current.value = ''
                     }}
-                    className="text-xs text-red-400 hover:text-red-200"
+                    className="inline-flex items-center gap-1 text-xs text-red-400 hover:text-red-200"
                   >
+                    <Trash2 className="h-3 w-3" />
                     Limpiar todas
                   </button>
                 </div>
@@ -557,7 +567,12 @@ export function CertificationModal({ isOpen, onClose, asset, onComplete, mode }:
                   type="file"
                   multiple
                   accept=".xml,.pdf,application/xml,application/pdf"
-                  onChange={(event) => setReportFiles(Array.from(event.target.files || []))}
+                  onChange={(event) => {
+                    const incoming = Array.from(event.target.files || [])
+                    setReportFiles((prev) => [...prev, ...incoming])
+                    setError(null)
+                    event.target.value = ''
+                  }}
                   className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
                 />
                 <div className={cn(
@@ -580,26 +595,43 @@ export function CertificationModal({ isOpen, onClose, asset, onComplete, mode }:
                 </div>
               </div>
               {reportFiles.length > 0 && (
-                <div className="flex flex-wrap gap-2 text-xs text-surface-400">
-                  {reportFiles.map((file) => (
-                    <span key={`${file.name}-${file.lastModified}`} className="px-3 py-1 bg-surface-800 rounded-full border border-surface-700">
-                      {file.name}
-                    </span>
-                  ))}
+                <div className="space-y-2">
+                  <div className="flex flex-wrap gap-2 text-xs text-surface-300">
+                    {reportFiles.map((file, idx) => (
+                      <span
+                        key={`${file.name}-${file.lastModified}-${idx}`}
+                        className="inline-flex items-center gap-1.5 max-w-full px-2.5 py-1 bg-surface-800 rounded-full border border-surface-700"
+                      >
+                        <FileText className="h-3 w-3 shrink-0 text-emerald-400" />
+                        <span className="truncate" title={file.name}>{file.name}</span>
+                        <button
+                          type="button"
+                          onClick={() => removeReportAt(idx)}
+                          className="shrink-0 rounded-full p-0.5 text-rose-400 hover:bg-rose-500/20 hover:text-rose-300"
+                          title={`Eliminar ${file.name}`}
+                          aria-label={`Eliminar ${file.name}`}
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </span>
+                    ))}
+                  </div>
                   <button
                     type="button"
                     onClick={() => {
                       setReportFiles([])
+                      setError(null)
                       if (reportInputRef.current) reportInputRef.current.value = ''
                     }}
-                    className="text-[11px] text-emerald-400 hover:text-emerald-200"
+                    className="inline-flex items-center gap-1 text-[11px] text-rose-400 hover:text-rose-200"
                   >
-                    Limpiar
+                    <Trash2 className="h-3 w-3" />
+                    Limpiar documentos
                   </button>
                 </div>
               )}
               <p className="text-xs text-surface-500">
-                El documento debe reflejar el ID que estás registrando arriba y puede ser PDF o XML.
+                Opcional: puedes adjuntar el PDF o XML del software de borrado.
               </p>
             </div>
 

@@ -55,6 +55,9 @@ export function BatchesForSettlementTable({ batches }: BatchesForSettlementTable
               <th className="text-right px-6 py-4 text-gray-500 dark:text-surface-400 text-xs font-semibold uppercase">
                 Ventas
               </th>
+              <th className="text-right px-6 py-4 text-gray-500 dark:text-surface-400 text-xs font-semibold uppercase">
+                Utilidad
+              </th>
               <th className="text-center px-6 py-4 text-gray-500 dark:text-surface-400 text-xs font-semibold uppercase">
                 Estado
               </th>
@@ -128,6 +131,20 @@ export function BatchesForSettlementTable({ batches }: BatchesForSettlementTable
                       type="revenue"
                     />
                   </div>
+                </td>
+
+                {/* Utilidad parcial: ventas − costo lote */}
+                <td className="px-6 py-4 text-right">
+                  <span
+                    className={cn(
+                      'font-bold tabular-nums',
+                      batch.total_sales - batch.total_cost >= 0
+                        ? 'text-emerald-600 dark:text-emerald-400'
+                        : 'text-red-500'
+                    )}
+                  >
+                    {formatCurrency(batch.total_sales - batch.total_cost)}
+                  </span>
                 </td>
 
                 {/* Estado Liquidación */}

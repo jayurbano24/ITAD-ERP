@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useTransition, useMemo } from 'react'
+import { useState, useTransition, useMemo, useRef, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   Plus,
@@ -29,10 +29,13 @@ import {
   Hammer,
   Wrench,
   Settings,
-  Eraser
+  Eraser,
+  ImagePlus,
+  ScanLine
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { createTicketAction, updateTicketAction, updateTicketStatus, deleteTicketCompletely, type OperationsTicket, type TicketStatus, type TicketType } from '../actions'
+import { createTicketAction, updateTicketAction, updateTicketStatus, deleteTicketCompletely, getTicketAssetsAction, type OperationsTicket, type TicketStatus, type TicketType } from '../actions'
+import { prefillTicketFromReceiptPhoto } from '../receiptPrefill'
 import { type CrmEntity } from '../../clientes/actions'
 import { type CatalogItem } from '../../configuracion/usuarios/actions'
 import { Badge, type BadgeVariant } from '@/components/ui/Badge'
@@ -636,23 +639,60 @@ function CreateTicketModal({
 }) {
   const uniqueServiceTypes = useMemo(() => {
     const seen = new Set<string>()
-    return serviceTypes.filter((type) => {
+    const fromCatalog = serviceTypes.filter((type) => {
       const normalizedName = normalizeServiceTypeName(type.name ?? '')
-      if (seen.has(normalizedName)) return false
+      if (!normalizedName || seen.has(normalizedName)) return false
       seen.add(normalizedName)
       return true
     })
+
+    // Fallback si el catálogo aún no existe / está vacío en esta BD
+    if (fromCatalog.length > 0) return fromCatalog
+
+    return (Object.keys(ticketTitleByType) as TicketType[]).map((type) => ({
+      id: `fallback-${type}`,
+      name: ticketTitleByType[type],
+      is_active: true,
+      created_at: '',
+    }))
   }, [serviceTypes])
 
   const defaultServiceTypeId = uniqueServiceTypes[0]?.id ?? ''
   const [selectedServiceTypeId, setSelectedServiceTypeId] = useState<string>(defaultServiceTypeId)
+
+  useEffect(() => {
+    if (!selectedServiceTypeId && uniqueServiceTypes[0]?.id) {
+      setSelectedServiceTypeId(uniqueServiceTypes[0].id)
+    }
+  }, [selectedServiceTypeId, uniqueServiceTypes])
   const [selectedClientId, setSelectedClientId] = useState<string>('')
+  const [localClients, setLocalClients] = useState<CrmEntity[]>(clients)
+  const [localBrands, setLocalBrands] = useState<CatalogItem[]>(brands)
+  const [localModels, setLocalModels] = useState<Array<CatalogItem & { brand_id?: string | null }>>(models as Array<CatalogItem & { brand_id?: string | null }>)
+  const [localProductTypes, setLocalProductTypes] = useState<CatalogItem[]>(productTypes)
+  const [pickupDate, setPickupDate] = useState('')
+  const [pickupAddress, setPickupAddress] = useState('')
+  const [description, setDescription] = useState('')
+  const [notes, setNotes] = useState('')
+  const [receiptBusy, setReceiptBusy] = useState(false)
+  const [receiptInfo, setReceiptInfo] = useState<string | null>(null)
+  const [receiptError, setReceiptError] = useState<string | null>(null)
+  const [receiptFile, setReceiptFile] = useState<File | null>(null)
+  const [receiptPreviewUrl, setReceiptPreviewUrl] = useState<string | null>(null)
+  const receiptInputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    return () => {
+      if (receiptPreviewUrl) URL.revokeObjectURL(receiptPreviewUrl)
+    }
+  }, [receiptPreviewUrl])
   const [manualItems, setManualItems] = useState<Array<{
     id: string
     brand_id: string
     model_id: string
     product_type_id: string
     quantity: number
+    expected_serial?: string | null
   }>>([])
   const [newItem, setNewItem] = useState({
     brand_id: '',
@@ -661,8 +701,100 @@ function CreateTicketModal({
     quantity: 1
   })
 
+  useEffect(() => {
+    setLocalClients(clients)
+  }, [clients])
+
+  useEffect(() => {
+    setLocalBrands(brands)
+    setLocalModels(models as Array<CatalogItem & { brand_id?: string | null }>)
+    setLocalProductTypes(productTypes)
+  }, [brands, models, productTypes])
+
   // Obtener el cliente seleccionado
-  const selectedClient = clients.find(c => c.id === selectedClientId)
+  const selectedClient = localClients.find(c => c.id === selectedClientId)
+
+  const handleReceiptPhoto = async (file: File) => {
+    setReceiptBusy(true)
+    setReceiptError(null)
+    setReceiptInfo('Leyendo foto del recibo…')
+    try {
+      if (receiptPreviewUrl) URL.revokeObjectURL(receiptPreviewUrl)
+      setReceiptFile(file)
+      setReceiptPreviewUrl(URL.createObjectURL(file))
+
+      const formData = new FormData()
+      formData.append('receipt', file)
+      const result = await prefillTicketFromReceiptPhoto(formData)
+
+      if (!result.success || !result.client) {
+        setReceiptError(result.error || 'No se pudo interpretar el recibo')
+        setReceiptInfo(null)
+        return
+      }
+
+      setLocalClients((prev) => {
+        if (prev.some((c) => c.id === result.client!.id)) return prev
+        return [result.client!, ...prev]
+      })
+      setLocalBrands((prev) => {
+        const next = [...prev]
+        for (const brand of result.brands) {
+          if (!next.some((b) => b.id === brand.id)) next.push(brand)
+        }
+        return next
+      })
+      setLocalModels((prev) => {
+        const next = [...prev]
+        for (const model of result.models) {
+          if (!next.some((m) => m.id === model.id)) next.push(model)
+        }
+        return next
+      })
+      setLocalProductTypes((prev) => {
+        const next = [...prev]
+        for (const type of result.productTypes) {
+          if (!next.some((t) => t.id === type.id)) next.push(type)
+        }
+        return next
+      })
+
+      setSelectedClientId(result.client.id)
+      if (result.pickup_date) setPickupDate(result.pickup_date)
+      if (result.pickup_address) setPickupAddress(result.pickup_address)
+      if (result.notes) {
+        setNotes(result.notes)
+        setDescription(result.notes)
+      }
+
+      if (result.items.length > 0) {
+        setManualItems(
+          result.items.map((item, idx) => ({
+            id: `receipt-${Date.now()}-${idx}`,
+            brand_id: item.brand_id,
+            model_id: item.model_id,
+            product_type_id: item.product_type_id,
+            quantity: item.quantity,
+            expected_serial: item.expected_serial,
+          }))
+        )
+      }
+
+      const orderLabel = result.parsed?.orderNumber ? ` (${result.parsed.orderNumber})` : ''
+      setReceiptInfo(
+        result.clientCreated
+          ? `Cliente «${result.client.commercial_name}» creado${orderLabel}. Revisa y guarda el ticket.`
+          : `Cliente «${result.client.commercial_name}» seleccionado${orderLabel}. Revisa y guarda el ticket.`
+      )
+    } catch (err) {
+      console.error('[RECEIPT UPLOAD]', err)
+      setReceiptError(err instanceof Error ? err.message : 'Error al procesar la foto')
+      setReceiptInfo(null)
+    } finally {
+      setReceiptBusy(false)
+      if (receiptInputRef.current) receiptInputRef.current.value = ''
+    }
+  }
 
   const selectedServiceType = uniqueServiceTypes.find((type) => type.id === selectedServiceTypeId)
   const selectedServiceTypeLabel = selectedServiceType?.name ?? uniqueServiceTypes[0]?.name ?? 'Recolección'
@@ -678,8 +810,8 @@ function CreateTicketModal({
   // Filter models based on selected brand
   const filteredModels = useMemo(() => {
     if (!newItem.brand_id) return []
-    return models.filter((model: any) => model.brand_id === newItem.brand_id)
-  }, [models, newItem.brand_id])
+    return localModels.filter((model) => model.brand_id === newItem.brand_id)
+  }, [localModels, newItem.brand_id])
   const handleAddItem = () => {
     if (!newItem.brand_id || !newItem.model_id || !newItem.product_type_id || newItem.quantity <= 0) {
       alert('Por favor selecciona todos los campos del equipo')
@@ -688,7 +820,8 @@ function CreateTicketModal({
 
     const itemToAdd = {
       id: `manual-${Date.now()}`,
-      ...newItem
+      ...newItem,
+      expected_serial: null as string | null,
     }
 
     console.log('[ADD ITEM] Adding item:', itemToAdd)
@@ -739,7 +872,15 @@ function CreateTicketModal({
         </div>
 
         {/* Form */}
-        <form action={onSubmit} className="p-6 space-y-5">
+        <form
+          action={(formData) => {
+            if (receiptFile) {
+              formData.set('receipt_photo', receiptFile)
+            }
+            onSubmit(formData)
+          }}
+          className="p-6 space-y-5"
+        >
           {/* Error Message */}
           {error && (
             <div className="p-4 bg-red-500/10 border border-red-500/20 rounded-xl flex items-start gap-3">
@@ -756,6 +897,80 @@ function CreateTicketModal({
             </div>
           )}
 
+          {/* Precarga desde foto de recibo (XSi / ITAD) */}
+          <div className="space-y-2 rounded-xl border border-dashed border-brand-500/40 bg-brand-500/5 p-4">
+            <div className="flex items-start gap-3">
+              <div className="p-2 rounded-lg bg-brand-500/15">
+                <ScanLine className="w-4 h-4 text-brand-400" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-medium text-gray-900 dark:text-white">
+                  Precargar desde foto del recibo
+                </p>
+                <p className="text-xs text-surface-400 mt-0.5">
+                  Sube el «Receipt of Equipment» para crear el cliente y llenar equipos, dirección y fecha.
+                </p>
+              </div>
+            </div>
+            <input
+              ref={receiptInputRef}
+              type="file"
+              accept="image/*,.pdf"
+              className="hidden"
+              disabled={receiptBusy || isPending}
+              onChange={(e) => {
+                const file = e.target.files?.[0]
+                if (file) void handleReceiptPhoto(file)
+              }}
+            />
+            <button
+              type="button"
+              disabled={receiptBusy || isPending}
+              onClick={() => receiptInputRef.current?.click()}
+              className="w-full flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg
+                       bg-surface-900 border border-surface-600 text-sm text-white
+                       hover:border-brand-500 hover:bg-surface-800 transition-colors
+                       disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              {receiptBusy ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Procesando foto…
+                </>
+              ) : (
+                <>
+                  <ImagePlus className="w-4 h-4" />
+                  Subir foto del recibo
+                </>
+              )}
+            </button>
+            {receiptPreviewUrl && (
+              <div className="mt-2 overflow-hidden rounded-lg border border-surface-600 bg-surface-900">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={receiptPreviewUrl}
+                  alt="Vista previa del recibo"
+                  className="max-h-48 w-full object-contain bg-black/40"
+                />
+                <p className="px-3 py-1.5 text-[11px] text-surface-400 truncate">
+                  {receiptFile?.name || 'recibo'} · se guardará al crear el ticket
+                </p>
+              </div>
+            )}
+            {receiptInfo && (
+              <p className="text-xs text-emerald-400 flex items-start gap-1.5">
+                <CheckCircle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
+                {receiptInfo}
+              </p>
+            )}
+            {receiptError && (
+              <p className="text-xs text-red-400 flex items-start gap-1.5">
+                <AlertCircle className="w-3.5 h-3.5 mt-0.5 flex-shrink-0" />
+                {receiptError}
+              </p>
+            )}
+          </div>
+
           {/* Cliente */}
           <div className="space-y-2">
             <FormLabel required>Cliente</FormLabel>
@@ -769,7 +984,7 @@ function CreateTicketModal({
                        focus:border-brand-500 transition-all cursor-pointer"
             >
               <option value="">Seleccionar cliente...</option>
-              {clients.filter(c => c.is_active).map(client => (
+              {localClients.filter(c => c.is_active).map(client => (
                 <option key={client.id} value={client.id}>
                   {client.commercial_name} ({client.tax_id_nit})
                 </option>
@@ -839,7 +1054,7 @@ function CreateTicketModal({
                            cursor-pointer"
                 >
                   <option value="">Seleccionar Marca</option>
-                  {brands.map(brand => (
+                  {localBrands.map(brand => (
                     <option key={brand.id} value={brand.id}>
                       {brand.name}
                     </option>
@@ -867,7 +1082,7 @@ function CreateTicketModal({
                            cursor-pointer"
                 >
                   <option value="">Seleccionar Tipo</option>
-                  {productTypes.map(type => (
+                  {localProductTypes.map(type => (
                     <option key={type.id} value={type.id}>
                       {type.name}
                     </option>
@@ -902,10 +1117,10 @@ function CreateTicketModal({
                 <p className="text-xs font-medium text-surface-400 uppercase tracking-wide">
                   {manualItems.length} equipo{manualItems.length !== 1 ? 's' : ''} agregado{manualItems.length !== 1 ? 's' : ''}
                 </p>
-                {manualItems.map((item, idx) => {
-                  const brand = brands.find(b => b.id === item.brand_id)
-                  const model = models.find(m => m.id === item.model_id)
-                  const type = productTypes.find(t => t.id === item.product_type_id)
+                {manualItems.map((item) => {
+                  const brand = localBrands.find(b => b.id === item.brand_id)
+                  const model = localModels.find(m => m.id === item.model_id)
+                  const type = localProductTypes.find(t => t.id === item.product_type_id)
                   return (
                     <div key={item.id} className="flex items-start justify-between p-3 bg-surface-900/60 rounded-lg border border-surface-700">
                       <div className="flex-1 min-w-0">
@@ -914,6 +1129,7 @@ function CreateTicketModal({
                         </p>
                         <p className="text-xs text-surface-500">
                           {type?.name} • Cantidad: {item.quantity}
+                          {item.expected_serial ? ` • S/N: ${item.expected_serial}` : ''}
                         </p>
                       </div>
                       <button
@@ -928,14 +1144,23 @@ function CreateTicketModal({
                   )
                 })}
                 {/* Hidden inputs para enviar los items al servidor */}
-                {manualItems.map((item, idx) => (
-                  <div key={`hidden-${item.id}`}>
-                    <input type="hidden" name={`items[${idx}].brand_id`} value={item.brand_id} />
-                    <input type="hidden" name={`items[${idx}].model_id`} value={item.model_id} />
-                    <input type="hidden" name={`items[${idx}].product_type_id`} value={item.product_type_id} />
-                    <input type="hidden" name={`items[${idx}].quantity`} value={item.quantity} />
-                  </div>
-                ))}
+                {manualItems.map((item, idx) => {
+                  const brand = localBrands.find(b => b.id === item.brand_id)
+                  const model = localModels.find(m => m.id === item.model_id)
+                  const type = localProductTypes.find(t => t.id === item.product_type_id)
+                  return (
+                    <div key={`hidden-${item.id}`}>
+                      <input type="hidden" name={`items[${idx}].brand_id`} value={item.brand_id} />
+                      <input type="hidden" name={`items[${idx}].model_id`} value={item.model_id} />
+                      <input type="hidden" name={`items[${idx}].product_type_id`} value={item.product_type_id} />
+                      <input type="hidden" name={`items[${idx}].quantity`} value={item.quantity} />
+                      <input type="hidden" name={`items[${idx}].expected_serial`} value={item.expected_serial || ''} />
+                      <input type="hidden" name={`items[${idx}].brand`} value={brand?.name || ''} />
+                      <input type="hidden" name={`items[${idx}].model`} value={model?.name || ''} />
+                      <input type="hidden" name={`items[${idx}].product_type`} value={type?.name || ''} />
+                    </div>
+                  )
+                })}
               </div>
             )}
           </div>
@@ -948,6 +1173,8 @@ function CreateTicketModal({
             <input
               name="pickup_date"
               type="date"
+              value={pickupDate}
+              onChange={(e) => setPickupDate(e.target.value)}
               className="w-full px-4 py-3 bg-surface-800 border border-surface-700 rounded-xl
                        text-white focus:outline-none focus:ring-2 focus:ring-brand-500/50 
                        focus:border-brand-500 transition-all"
@@ -962,12 +1189,16 @@ function CreateTicketModal({
             <input
               name="pickup_address"
               type="text"
+              value={pickupAddress}
+              onChange={(e) => setPickupAddress(e.target.value)}
               placeholder="Dirección donde se recogerán los equipos"
               className="w-full px-4 py-3 bg-surface-800 border border-surface-700 rounded-xl
                        text-white placeholder-surface-500 focus:outline-none focus:ring-2 
                        focus:ring-brand-500/50 focus:border-brand-500 transition-all"
             />
           </div>
+
+          <input type="hidden" name="notes" value={notes} />
 
           {/* Descripción */}
           <div className="space-y-2">
@@ -977,6 +1208,8 @@ function CreateTicketModal({
             <textarea
               name="description"
               rows={3}
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
               placeholder="Detalles adicionales, instrucciones especiales, contacto en sitio..."
               className="w-full px-4 py-3 bg-surface-800 border border-surface-700 rounded-xl
                        text-white placeholder-surface-500 focus:outline-none focus:ring-2 
@@ -1043,20 +1276,33 @@ function ViewTicketModal({
   const statConfig = getStatusBadgeConfig(ticket.status)
   const prioConfig = priorityConfig[ticket.priority] || priorityConfig[3]
 
-  // Cargar assets al abrir el modal
-  useState(() => {
+  // Cargar equipos solo al abrir la pestaña (evita romper el detalle del ticket)
+  useEffect(() => {
+    if (activeTab !== 'assets') return
+
+    let cancelled = false
     const loadAssets = async () => {
       setIsLoadingAssets(true)
-      const { data, error } = await import('../actions').then(mod => mod.getTicketAssetsAction(ticket.id))
-      if (error) {
-        setAssetsError(error)
-      } else {
-        setAssets(data || [])
+      setAssetsError(null)
+      try {
+        const result = await getTicketAssetsAction(ticket.id).catch(() => null)
+        if (cancelled) return
+        setAssets(result?.data ?? [])
+        setAssetsError(result?.error ?? null)
+      } catch (err) {
+        if (cancelled) return
+        console.error('[loadAssets]', err)
+        setAssets([])
+        setAssetsError(err instanceof Error ? err.message : 'Error al cargar equipos')
+      } finally {
+        if (!cancelled) setIsLoadingAssets(false)
       }
-      setIsLoadingAssets(false)
     }
-    loadAssets()
-  })
+    void loadAssets()
+    return () => {
+      cancelled = true
+    }
+  }, [ticket.id, activeTab])
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -1251,35 +1497,55 @@ function ViewTicketModal({
                 </div>
               )}
 
-              {/* Archivo Adjunto */}
-              {(ticket as any).attachment_url && (
-                <div className="bg-green-500/10 border border-green-500/30 rounded-xl p-4">
-                  <div className="flex items-center gap-2 text-green-400 mb-3">
-                    <FileText className="w-4 h-4" />
-                    <span className="text-sm font-medium">Archivo de Detalle Adjunto</span>
+              {/* Foto / archivo adjunto (recibo OCR u otro) */}
+              {ticket.attachment_url && (
+                <div className="bg-green-500/10 border border-green-500/30 rounded-xl p-4 space-y-3">
+                  <div className="flex items-center gap-2 text-green-400">
+                    <ImagePlus className="w-4 h-4" />
+                    <span className="text-sm font-medium">
+                      {/\.(png|jpe?g|webp|gif)(\?|$)/i.test(ticket.attachment_url) ||
+                      /\.(png|jpe?g|webp|gif)$/i.test(ticket.attachment_name || '')
+                        ? 'Foto del recibo'
+                        : 'Archivo adjunto'}
+                    </span>
                   </div>
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-3">
-                      <div className="p-2 bg-green-500/20 rounded-lg">
-                        <FileText className="w-5 h-5 text-green-400" />
-                      </div>
-                      <div>
-                        <p className="text-white font-medium">
-                          {(ticket as any).attachment_name || 'Archivo Excel'}
-                        </p>
-                        <p className="text-sm text-surface-500">Lista de equipos a recolectar</p>
-                      </div>
+
+                  {(
+                    /\.(png|jpe?g|webp|gif)(\?|$)/i.test(ticket.attachment_url) ||
+                    /\.(png|jpe?g|webp|gif)$/i.test(ticket.attachment_name || '')
+                  ) ? (
+                    <a
+                      href={ticket.attachment_url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="block overflow-hidden rounded-lg border border-green-500/20 bg-black/30"
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img
+                        src={ticket.attachment_url}
+                        alt={ticket.attachment_name || 'Foto del recibo'}
+                        className="max-h-72 w-full object-contain"
+                      />
+                    </a>
+                  ) : null}
+
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="text-white font-medium truncate">
+                        {ticket.attachment_name || 'Adjunto'}
+                      </p>
+                      <p className="text-sm text-surface-500">Documento origen del ticket</p>
                     </div>
                     <a
-                      href={(ticket as any).attachment_url}
+                      href={ticket.attachment_url}
                       target="_blank"
                       rel="noopener noreferrer"
                       download
                       className="flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-500 
-                               text-white font-medium rounded-xl transition-colors"
+                               text-white font-medium rounded-xl transition-colors flex-shrink-0"
                     >
                       <Download className="w-4 h-4" />
-                      Descargar
+                      Abrir
                     </a>
                   </div>
                 </div>

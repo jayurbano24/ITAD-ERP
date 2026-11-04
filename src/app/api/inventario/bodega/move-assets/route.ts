@@ -28,24 +28,27 @@ export async function POST(request: Request) {
             return NextResponse.json({ error: 'Bodega destino no encontrada' }, { status: 404 })
         }
 
-        // 1.5 Validar que los equipos no estén destruidos
+        // 1.5 Validar que los equipos no estén vendidos / destruidos / scrap
         const { data: assetsToCheck } = await supabase
             .from('assets')
-            .select('id, status, serial_number')
+            .select('id, status, serial_number, current_warehouse_id')
             .in('id', assetIds)
 
-        const destroyedAssets = assetsToCheck?.filter(a => a.status === 'destroyed') || []
-        if (destroyedAssets.length > 0) {
-            const serials = destroyedAssets.map(a => a.serial_number).join(', ')
+        const terminalAssets =
+            assetsToCheck?.filter((a) =>
+                ['destroyed', 'sold', 'scrapped'].includes(String(a.status || ''))
+            ) || []
+        if (terminalAssets.length > 0) {
+            const serials = terminalAssets.map((a) => `${a.serial_number} (${a.status})`).join(', ')
             return NextResponse.json({
-                error: `No se pueden mover equipos destruidos: ${serials}`
+                error: `No se pueden mover equipos fuera de proceso: ${serials}`,
             }, { status: 400 })
         }
 
         // 2. Obtener bodega origen de los assets antes de actualizar
         const { data: assetsBeforeUpdate } = await supabase
             .from('assets')
-            .select('id, current_warehouse_id')
+            .select('id, current_warehouse_id, status, serial_number')
             .in('id', assetIds)
 
         const transferDate = providedTransferDate ? new Date(providedTransferDate).toISOString() : new Date().toISOString()

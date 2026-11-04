@@ -14,6 +14,7 @@ type MoveItemsModalProps = {
 const WAREHOUSES = [
     { code: 'BOD-REC', name: 'Bodega Recepción' },
     { code: 'BOD-REM', name: 'Bodega Remarketing' },
+    { code: 'BOD-REP', name: 'Por Reparación' },
     { code: 'BOD-VAL', name: 'Bodega Valorización' },
     { code: 'BOD-HARV', name: 'Bodega Hardvesting' },
     { code: 'BOD-DES', name: 'Bodega Destrucción' }
@@ -57,16 +58,27 @@ export default function MoveItemsModal({ isOpen, onClose, selectedAssets, curren
 
         setLoading(true)
         try {
-            const response = await fetch('/api/inventario/bodega/move-assets', {
+            // Por Reparación alimenta Diagnóstico: crear OS + mover a BOD-REP
+            const endpoint =
+                destination === 'BOD-REP'
+                    ? '/api/inventario/bodega/send-to-repair'
+                    : '/api/inventario/bodega/move-assets'
+
+            const payload =
+                destination === 'BOD-REP'
+                    ? { assetIds: selectedAssets.map((a) => a.id) }
+                    : {
+                          assetIds: selectedAssets.map((a) => a.id),
+                          destinationWarehouseCode: destination,
+                          reason,
+                          correlative,
+                          transferDate: transferDate ? new Date(transferDate).toISOString() : undefined,
+                      }
+
+            const response = await fetch(endpoint, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    assetIds: selectedAssets.map(a => a.id),
-                    destinationWarehouseCode: destination,
-                    reason,
-                    correlative,
-                    transferDate: transferDate ? new Date(transferDate).toISOString() : undefined
-                })
+                body: JSON.stringify(payload),
             })
 
             if (!response.ok) {
@@ -147,6 +159,11 @@ export default function MoveItemsModal({ isOpen, onClose, selectedAssets, curren
                                 </label>
                             ))}
                         </div>
+                        {destination === 'BOD-REP' && (
+                            <p className="mt-2 text-[11px] text-amber-300/90">
+                                Se crearán órdenes de servicio abiertas para que los equipos aparezcan en Diagnóstico.
+                            </p>
+                        )}
                     </div>
 
                     <div>

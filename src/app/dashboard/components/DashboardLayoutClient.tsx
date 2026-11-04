@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { Menu } from 'lucide-react'
 import Sidebar from './Sidebar'
@@ -38,13 +38,19 @@ export default function DashboardLayoutClient({
 }: DashboardLayoutClientProps) {
     const device = useDevice()
     const [isSidebarOpen, setIsSidebarOpen] = useState(false)
+    const [mounted, setMounted] = useState(false)
 
-    const showHamburger = device !== 'desktop'
+    useEffect(() => {
+        setMounted(true)
+    }, [])
+
+    // Evitar hidratar un <button> que el SSR no renderizó (viewport < 1280).
+    const showHamburger = mounted && device !== 'desktop'
 
     return (
         <div className="min-h-screen bg-white dark:bg-[#0f1419] flex transition-colors duration-300" style={themeStyles}>
             <Sidebar
-                device={device}
+                device={mounted ? device : 'desktop'}
                 isOpen={isSidebarOpen}
                 onClose={() => setIsSidebarOpen(false)}
                 userName={userName}
@@ -62,7 +68,7 @@ export default function DashboardLayoutClient({
                 {/* Top Header Barra */}
                 <header className="h-16 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between px-4 sm:px-8 bg-white/50 dark:bg-[#0f1419]/50 backdrop-blur-sm z-10 transition-colors duration-300">
                     <div className="flex items-center gap-4">
-                        {/* Botón hamburguesa solo en móvil/tablet */}
+                        {/* Botón hamburguesa solo en móvil/tablet (post-mount) */}
                         {showHamburger && (
                             <button
                                 onClick={() => setIsSidebarOpen(true)}

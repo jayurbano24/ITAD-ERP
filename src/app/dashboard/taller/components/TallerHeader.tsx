@@ -10,27 +10,27 @@ export function TallerHeader() {
 
   return (
     <>
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-8 border-b border-gray-100 dark:border-surface-800 pb-10">
-        <div className="flex items-center gap-6">
-          <div className="p-5 bg-amber-600 dark:bg-amber-600 rounded-[2.5rem] shadow-xl shadow-amber-500/20 active:scale-95 transition-transform cursor-pointer">
-            <Wrench className="w-10 h-10 text-white" />
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-gray-100 dark:border-surface-800 pb-3">
+        <div className="flex items-center gap-3">
+          <div className="p-2.5 bg-amber-600 rounded-xl shadow-md shadow-amber-500/20">
+            <Wrench className="w-5 h-5 text-white" />
           </div>
           <div>
-            <Text variant="h1" as="h1" className="leading-none tracking-tighter uppercase font-black">
+            <Text variant="h1" as="h1" className="text-xl leading-none tracking-tight uppercase font-black">
               Taller de Reparación
             </Text>
-            <Text variant="muted" className="mt-2 block font-black uppercase tracking-[0.4em]">
-              Gestión de órdenes de trabajo y reparaciones
+            <Text variant="muted" className="mt-0.5 block text-[10px] font-bold uppercase tracking-wider">
+              Órdenes · Diagnóstico · Reparación · QC
             </Text>
           </div>
         </div>
         <button
           onClick={() => setIsModalOpen(true)}
-          className="flex items-center gap-3 px-8 py-5 bg-amber-600 hover:bg-amber-700 
-                   text-white text-xs font-black uppercase tracking-widest rounded-3xl transition-all shadow-2xl shadow-amber-500/30 active:scale-95 group"
+          className="inline-flex items-center gap-2 px-4 py-2.5 bg-amber-600 hover:bg-amber-700 
+                   text-white text-[10px] font-black uppercase tracking-widest rounded-xl transition-all shadow-md shadow-amber-500/20 active:scale-95"
         >
-          <Plus className="w-5 h-5 group-hover:rotate-90 transition-transform duration-300" />
-          Nueva Orden de Trabajo
+          <Plus className="w-4 h-4" />
+          Nueva OS
         </button>
       </div>
 
@@ -41,4 +41,3 @@ export function TallerHeader() {
     </>
   )
 }
-

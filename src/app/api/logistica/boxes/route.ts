@@ -199,7 +199,7 @@ export async function GET(request: Request) {
 
     const { data: ticketRecord, error: ticketError } = await supabase
       .from('operations_tickets')
-      .select('id, readable_id, title, client:crm_entities ( commercial_name )')
+      .select('id, readable_id, title, pickup_address, pickup_date, attachment_url, attachment_name, client:crm_entities ( commercial_name )')
       .eq('id', ticketId)
       .maybeSingle()
 
@@ -218,10 +218,11 @@ export async function GET(request: Request) {
     const readableLabel = ticketRecord.readable_id || ticketRecord.id
     const lotNumber = ticketRecord.title || `Lote ${readableLabel}`
 
+    // Solo columnas reales de ticket_items en esta BD (sin brand_full/RAM/etc.)
     const { data: boxRows, error: boxesError } = await supabase
       .from('ticket_items')
       .select(
-        'id, box_number, box_sku, box_seal, box_reception_code, brand, model, brand_full, model_full, brand_id, model_id, product_type, product_type_id, collected_serial, color, color_detail, processor, bios_version, observations, validation_status, classification_rec, classification_f, classification_c, ram_capacity, ram_type, disk_capacity, disk_type, keyboard_type, keyboard_version'
+        'id, box_number, box_sku, box_seal, box_reception_code, brand, model, brand_id, model_id, product_type, product_type_id, expected_serial, collected_serial, color, validation_status, classification_f, classification_c, reception_metadata'
       )
       .eq('ticket_id', ticketId)
       .order('box_number', { ascending: true })
@@ -242,7 +243,7 @@ export async function GET(request: Request) {
       }
     >()
 
-    const rows = (boxRows ?? []) as TicketItemRow[]
+    const rows = (boxRows ?? []) as Array<TicketItemRow & { expected_serial?: string | null; reception_metadata?: Record<string, unknown> | null }>
     rows.forEach((row) => {
       const dbBoxNum = row.box_number
       const key = (dbBoxNum !== null && dbBoxNum !== undefined) ? Number(dbBoxNum) : 0
@@ -265,41 +266,48 @@ export async function GET(request: Request) {
       }
     })
 
+    // Incluye caja 0 = equipos del ticket sin caja logística (precarga desde Nuevo Ticket / OCR)
     const responseBoxes = Array.from(grouped.values())
-      .filter((group) => group.boxNumber > 0 && group.items.length > 0)
+      .filter((group) => group.items.length > 0)
       .sort((a, b) => a.boxNumber - b.boxNumber)
       .map((group) => ({
         boxNumber: group.boxNumber,
+        label: group.boxNumber > 0 ? `Caja ${group.boxNumber}` : 'Equipos del ticket',
+        source: group.boxNumber > 0 ? 'logistics' : 'ticket',
         boxSku: group.boxSku,
         boxSeal: group.boxSeal,
         boxReceptionCode: group.boxReceptionCode,
-        items: group.items.map((item) => ({
-          id: item.id,
-          brand: item.brand,
-          model: item.model,
-          brand_full: item.brand_full,
-          model_full: item.model_full,
-          brand_id: item.brand_id,
-          model_id: item.model_id,
-          product_type: item.product_type,
-          product_type_id: item.product_type_id,
-          collected_serial: item.collected_serial,
-          color: item.color,
-          color_detail: item.color_detail,
-          processor: item.processor,
-          bios_version: item.bios_version,
-          observations: item.observations,
-          validation_status: item.validation_status,
-          classification_rec: item.classification_rec,
-          classification_f: item.classification_f,
-          classification_c: item.classification_c,
-          ram_capacity: item.ram_capacity,
-          ram_type: item.ram_type,
-          disk_capacity: item.disk_capacity,
-          disk_type: item.disk_type,
-          keyboard_type: item.keyboard_type,
-          keyboard_version: item.keyboard_version
-        }))
+        items: group.items.map((item) => {
+          const meta = (item as { reception_metadata?: Record<string, unknown> | null }).reception_metadata || {}
+          return {
+            id: item.id,
+            brand: item.brand,
+            model: item.model,
+            brand_full: item.brand,
+            model_full: item.model,
+            brand_id: item.brand_id,
+            model_id: item.model_id,
+            product_type: item.product_type,
+            product_type_id: item.product_type_id,
+            expected_serial: (item as { expected_serial?: string | null }).expected_serial || null,
+            collected_serial: item.collected_serial,
+            color: item.color,
+            color_detail: item.color,
+            processor: (meta.processor as string) || '',
+            bios_version: (meta.bios_version as string) || '',
+            observations: (meta.observations as string) || '',
+            validation_status: item.validation_status,
+            classification_rec: (meta.classification_rec as string) || null,
+            classification_f: item.classification_f,
+            classification_c: item.classification_c,
+            ram_capacity: (meta.ram_capacity as string) || '',
+            ram_type: (meta.ram_type as string) || '',
+            disk_capacity: (meta.disk_capacity as string) || '',
+            disk_type: (meta.disk_type as string) || '',
+            keyboard_type: (meta.keyboard_type as string) || '',
+            keyboard_version: (meta.keyboard_version as string) || '',
+          }
+        })
       }))
 
     return NextResponse.json({
@@ -307,7 +315,11 @@ export async function GET(request: Request) {
         id: ticketRecord.id,
         readableId: readableLabel,
         client: clientName,
-        lotNumber
+        lotNumber,
+        pickupAddress: (ticketRecord as { pickup_address?: string | null }).pickup_address || null,
+        pickupDate: (ticketRecord as { pickup_date?: string | null }).pickup_date || null,
+        attachmentUrl: (ticketRecord as { attachment_url?: string | null }).attachment_url || null,
+        attachmentName: (ticketRecord as { attachment_name?: string | null }).attachment_name || null,
       },
       boxes: responseBoxes
     })

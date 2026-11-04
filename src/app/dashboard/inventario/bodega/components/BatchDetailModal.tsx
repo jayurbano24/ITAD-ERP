@@ -28,13 +28,17 @@ export default function BatchDetailModal({ batchId, batchCode, onClose }: BatchD
         setLoading(true)
         setError(null)
         const response = await fetch(`/api/inventario/bodega/batch-items?batchId=${encodeURIComponent(batchId)}`)
-        
+        const data = await response.json().catch(() => ({}))
+
         if (!response.ok) {
-          throw new Error('Error al cargar los items del lote')
+          throw new Error(
+            typeof data.error === 'string' && data.error
+              ? data.error
+              : 'Error al cargar los items del lote'
+          )
         }
-        
-        const data = await response.json()
-        setItems(data.items || [])
+
+        setItems(Array.isArray(data.items) ? data.items : [])
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Error desconocido')
       } finally {
@@ -43,15 +47,15 @@ export default function BatchDetailModal({ batchId, batchCode, onClose }: BatchD
     }
 
     if (batchId) {
-      fetchBatchItems()
+      void fetchBatchItems()
     }
   }, [batchId])
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center px-4 py-8">
-      <div className="absolute inset-0 bg-black/60" onClick={onClose} />
-      <div className="relative z-10 w-full max-w-4xl rounded-3xl border border-surface-800 bg-surface-950/95 p-6 space-y-6 shadow-2xl max-h-[80vh] overflow-y-auto">
-        <div className="flex items-center justify-between sticky top-0 bg-surface-950/95 pb-4">
+      <div className="absolute inset-0 bg-black/80" onClick={onClose} />
+      <div className="relative z-10 w-full max-w-4xl rounded-3xl border border-gray-700 bg-[#0f1419] p-6 space-y-6 shadow-2xl max-h-[80vh] overflow-y-auto">
+        <div className="flex items-center justify-between sticky top-0 bg-[#0f1419] pb-4">
           <div>
             <h2 className="text-xl font-semibold text-white">Detalles del Lote</h2>
             {batchCode && (
@@ -132,10 +136,10 @@ export default function BatchDetailModal({ batchId, batchCode, onClose }: BatchD
           </div>
         )}
 
-        <div className="flex justify-end gap-3 sticky bottom-0 bg-surface-950/95 pt-4">
+        <div className="flex justify-end gap-3 sticky bottom-0 bg-[#0f1419] pt-4">
           <button
             onClick={onClose}
-            className="px-4 py-3 bg-surface-800 hover:bg-surface-700 text-white rounded-xl font-semibold transition-colors"
+            className="px-4 py-3 bg-gray-800 hover:bg-gray-700 text-white rounded-xl font-semibold transition-colors"
           >
             Cerrar
           </button>
