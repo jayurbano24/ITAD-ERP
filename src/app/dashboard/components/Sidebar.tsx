@@ -187,7 +187,7 @@ export default function Sidebar({
       {/* Backdrop - solo visible cuando está abierto en móvil/tablet */}
       {isOpen && device !== 'desktop' && (
         <div
-          className="fixed inset-0 bg-black/50 z-40 xl:hidden"
+          className="fixed inset-0 bg-black/50 z-40 lg:hidden"
           onClick={onClose}
           aria-label="Cerrar menú"
         />
@@ -199,15 +199,15 @@ export default function Sidebar({
           // Base styles
           "bg-white dark:bg-[#1a1f2e] border-r border-gray-200 dark:border-gray-700 flex flex-col transition-all duration-300",
 
-          // Desktop: siempre visible, posición relativa
-          "xl:relative xl:flex xl:w-64 xl:flex-shrink-0 xl:translate-x-0",
+          // Desktop (lg+): siempre visible, posición relativa — alineado con useDevice / Tailwind `lg`
+          "lg:relative lg:flex lg:w-64 lg:flex-shrink-0 lg:translate-x-0",
 
           // Mobile/Tablet: posición fixed, oculto por defecto
-          "fixed inset-y-0 left-0 z-50 w-[280px]",
-          "xl:z-auto",
+          "fixed inset-y-0 left-0 z-50 w-[min(280px,88vw)] max-h-[100dvh]",
+          "lg:z-auto",
 
           // Transform para mostrar/ocultar en móvil
-          isOpen ? "translate-x-0" : "-translate-x-full xl:translate-x-0"
+          isOpen ? "translate-x-0" : "-translate-x-full lg:translate-x-0"
         )}
       >
         {/* Logo */}

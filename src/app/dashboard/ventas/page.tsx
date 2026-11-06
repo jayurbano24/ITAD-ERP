@@ -69,7 +69,7 @@ export default async function VentasPage({
   if (sp.status) queryBase.set('status', sp.status)
 
   return (
-    <div className="p-4 pb-8 flex flex-col gap-3 bg-gray-50/50 dark:bg-surface-950 min-h-[calc(100dvh-4rem)] transition-colors">
+    <div className="p-3 sm:p-4 pb-6 sm:pb-8 flex flex-col gap-2 sm:gap-3 bg-gray-50/50 dark:bg-surface-950 min-h-[calc(100dvh-4rem)] transition-colors">
       {/* Header */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
         <div className="flex items-center gap-2 min-w-0">
@@ -145,7 +145,7 @@ export default async function VentasPage({
       </div>
 
       {/* KPIs compactos */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+      <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-2">
         <div className="bg-white dark:bg-surface-900 border border-gray-100 dark:border-surface-800 rounded-xl px-3 py-2.5 flex items-center gap-2.5">
           <div className="p-1.5 bg-emerald-50 dark:bg-emerald-500/10 rounded-lg shrink-0">
             <DollarSign className="w-3.5 h-3.5 text-emerald-600 dark:text-emerald-400" />
@@ -201,7 +201,7 @@ export default async function VentasPage({
       </div>
 
       <SalesHistoryTable
-        className="flex-1 min-h-[48rem]"
+        className="flex-1 min-h-0 lg:min-h-[48rem]"
         orders={orders || []}
         searchQuery={q}
         period={period}

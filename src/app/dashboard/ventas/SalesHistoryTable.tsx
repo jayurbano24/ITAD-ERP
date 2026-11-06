@@ -457,300 +457,503 @@ export default function SalesHistoryTable({
         </div>
       )}
 
-      <div className={cn('w-full flex-1 overflow-x-auto', TABLE_MIN_HEIGHT_CLASS)}>
-        <table className="w-full min-w-[960px] text-sm table-fixed border-collapse">
-          <thead>
-            <tr className="bg-gray-50 dark:bg-surface-850 border-b border-gray-100 dark:border-surface-700">
-              <th className="w-9 px-2 py-2.5 text-center align-middle">
-                <input
-                  ref={headerCheckboxRef}
-                  type="checkbox"
-                  checked={allPageSelected}
-                  onChange={toggleSelectAllPage}
-                  disabled={paginatedOrders.length === 0}
-                  className="h-3.5 w-3.5 rounded border-gray-400 accent-emerald-600 cursor-pointer disabled:opacity-40"
-                  title="Seleccionar las 25 filas de esta página"
-                  aria-label="Seleccionar filas de la página actual"
-                />
-              </th>
-              <th className="relative text-left px-3 py-2.5 align-middle text-gray-500 dark:text-surface-400 text-[10px] font-bold uppercase tracking-widest">
-                <ExcelColumnFilter
-                  label="Cliente"
-                  options={options.cliente}
-                  selected={columnFilters.cliente ?? null}
-                  onChange={(next) => setColumnFilter('cliente', next)}
-                  sortDir={sort?.columnId === 'cliente' ? sort.dir : null}
-                  onSort={(dir) => handleSort('cliente', dir)}
-                />
-              </th>
-              <th className="relative text-left px-2 py-1.5 text-gray-500 dark:text-surface-400 text-[10px] font-bold uppercase tracking-widest">
-                <ExcelColumnFilter
-                  label="Invoice"
-                  options={options.invoice}
-                  selected={columnFilters.invoice ?? null}
-                  onChange={(next) => setColumnFilter('invoice', next)}
-                  sortDir={sort?.columnId === 'invoice' ? sort.dir : null}
-                  onSort={(dir) => handleSort('invoice', dir)}
-                />
-              </th>
-              <th className="relative text-left px-2 py-1.5 text-gray-500 dark:text-surface-400 text-[10px] font-bold uppercase tracking-widest">
-                <ExcelColumnFilter
-                  label="Factura SAT"
-                  options={options.sat}
-                  selected={columnFilters.sat ?? null}
-                  onChange={(next) => setColumnFilter('sat', next)}
-                  sortDir={sort?.columnId === 'sat' ? sort.dir : null}
-                  onSort={(dir) => handleSort('sat', dir)}
-                />
-              </th>
-              <th className="relative text-left px-3 py-2 text-gray-500 dark:text-surface-400 text-[10px] font-bold uppercase tracking-widest">
-                <ExcelColumnFilter
-                  label="Canal"
-                  options={options.canal}
-                  selected={columnFilters.canal ?? null}
-                  onChange={(next) => setColumnFilter('canal', next)}
-                  sortDir={sort?.columnId === 'canal' ? sort.dir : null}
-                  onSort={(dir) => handleSort('canal', dir)}
-                />
-              </th>
-              <th className="relative text-right px-3 py-2 text-gray-500 dark:text-surface-400 text-[10px] font-bold uppercase tracking-widest">
-                <div className="inline-flex justify-end w-full">
-                  <ExcelColumnFilter
-                    label="Total"
-                    options={options.total}
-                    selected={columnFilters.total ?? null}
-                    onChange={(next) => setColumnFilter('total', next)}
-                    sortDir={sort?.columnId === 'total' ? sort.dir : null}
-                    onSort={(dir) => handleSort('total', dir)}
-                  />
-                </div>
-              </th>
-              <th className="relative text-center px-3 py-2 text-gray-500 dark:text-surface-400 text-[10px] font-bold uppercase tracking-widest">
-                <ExcelColumnFilter
-                  label="Estado"
-                  options={options.estado}
-                  selected={columnFilters.estado ?? null}
-                  onChange={(next) => setColumnFilter('estado', next)}
-                  sortDir={sort?.columnId === 'estado' ? sort.dir : null}
-                  onSort={(dir) => handleSort('estado', dir)}
-                  align="center"
-                />
-              </th>
-              <th className="relative text-left px-3 py-2 text-gray-500 dark:text-surface-400 text-[10px] font-bold uppercase tracking-widest">
-                <ExcelColumnFilter
-                  label="Fecha"
-                  options={options.fecha}
-                  selected={columnFilters.fecha ?? null}
-                  onChange={(next) => setColumnFilter('fecha', next)}
-                  sortDir={sort?.columnId === 'fecha' ? sort.dir : null}
-                  onSort={(dir) => handleSort('fecha', dir)}
-                />
-              </th>
-              <th className="text-right px-2 py-2 text-gray-500 dark:text-surface-400 text-[10px] font-bold uppercase tracking-widest">
-                Post-venta
-              </th>
-              <th className="text-right px-3 py-2 text-gray-500 dark:text-surface-400 text-[10px] font-bold uppercase tracking-widest">
-                Política
-              </th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-gray-100 dark:divide-surface-800 bg-white dark:bg-surface-900 align-top">
-            {filteredOrders.length === 0 ? (
-              <tr>
-                <td colSpan={10} className="px-3 py-10 text-center">
-                  <div className="flex flex-col items-center gap-2">
-                    <ShoppingCart className="w-8 h-8 text-gray-300 dark:text-surface-700" />
-                    <p className="text-gray-600 dark:text-surface-400 font-bold text-sm">
-                      {activeFilterCount > 0
-                        ? 'Ninguna venta coincide con los filtros'
-                        : searchQuery
-                          ? `Sin resultados para “${searchQuery}”`
-                          : 'Sin ventas en este período'}
-                    </p>
-                    {activeFilterCount === 0 && (
-                      <Link href="/dashboard/ventas/nuevo" className="text-emerald-600 font-bold text-xs">
-                        Crear venta →
-                      </Link>
-                    )}
-                    {activeFilterCount > 0 && (
-                      <button
-                        type="button"
-                        onClick={clearAllColumnFilters}
-                        className="text-emerald-600 font-bold text-xs"
-                      >
-                        Limpiar filtros
-                      </button>
-                    )}
-                  </div>
-                </td>
-              </tr>
-            ) : (
-              paginatedOrders.map((order) => {
+      <div className="w-full flex-1 min-h-0 flex flex-col">
+        {/* Vista móvil / tablet: tarjetas apiladas (sin scroll horizontal) */}
+        <div className="lg:hidden flex-1">
+          {filteredOrders.length === 0 ? (
+            <div className="px-3 py-10 text-center border-t border-gray-100 dark:border-surface-800">
+              <div className="flex flex-col items-center gap-2">
+                <ShoppingCart className="w-8 h-8 text-gray-300 dark:text-surface-700" />
+                <p className="text-gray-600 dark:text-surface-400 font-bold text-sm">
+                  {activeFilterCount > 0
+                    ? 'Ninguna venta coincide con los filtros'
+                    : searchQuery
+                      ? `Sin resultados para “${searchQuery}”`
+                      : 'Sin ventas en este período'}
+                </p>
+                {activeFilterCount === 0 && (
+                  <Link href="/dashboard/ventas/nuevo" className="text-emerald-600 font-bold text-xs">
+                    Crear venta →
+                  </Link>
+                )}
+                {activeFilterCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={clearAllColumnFilters}
+                    className="text-emerald-600 font-bold text-xs"
+                  >
+                    Limpiar filtros
+                  </button>
+                )}
+              </div>
+            </div>
+          ) : (
+            <ul className="divide-y divide-gray-100 dark:divide-surface-800">
+              {paginatedOrders.map((order) => {
                 const channelInfo = formatSalesChannel(
-    order.payment_method,
-    order.internal_notes,
-    order.customer_notes
-  )
+                  order.payment_method,
+                  order.internal_notes,
+                  order.customer_notes
+                )
                 const fecha = formatFechaParts(order.created_at)
                 const isSelected = selectedIds.has(order.id)
                 return (
-                  <tr
+                  <li
                     key={order.id}
                     className={cn(
-                      'h-11 hover:bg-gray-50 dark:hover:bg-surface-800/50 transition-colors group',
+                      'p-3 sm:p-3.5 transition-colors',
                       isSelected && 'bg-emerald-500/5 dark:bg-emerald-500/10'
                     )}
                   >
-                    <td className="px-2 py-2.5 text-center align-middle">
+                    <div className="flex gap-2 items-start">
                       <input
                         type="checkbox"
                         checked={isSelected}
                         onChange={() => toggleRowSelection(order.id)}
-                        className="h-3.5 w-3.5 rounded border-gray-400 accent-emerald-600 cursor-pointer"
+                        className="h-3.5 w-3.5 mt-0.5 rounded border-gray-400 accent-emerald-600 cursor-pointer shrink-0"
                         aria-label={`Seleccionar venta ${order.invoice_number || order.id}`}
                       />
-                    </td>
-                    <td className="px-3 py-2.5 align-middle">
-                      <Link href={`/dashboard/ventas/${order.id}`} className="block min-w-0 hover:opacity-90">
-                        <p className="text-gray-900 dark:text-white font-semibold text-xs leading-tight hover:text-emerald-600 dark:hover:text-emerald-400">
-                          {order.customer?.commercial_name || 'N/A'}
-                        </p>
-                        <p className="text-gray-400 dark:text-surface-500 text-[10px] font-medium uppercase tracking-wider">
-                          {order.customer?.tax_id_nit}
-                        </p>
-                      </Link>
-                    </td>
-                    <td className="px-2 py-1.5">
-                      <span className="font-mono font-bold text-[10px] text-gray-900 dark:text-white">
-                        {formatInvoiceLabel(order.invoice_number) === EMPTY
-                          ? '—'
-                          : formatInvoiceLabel(order.invoice_number)}
-                      </span>
-                    </td>
-                    <td className="px-2 py-1.5">
-                      <SatInvoiceEditCell
-                        orderId={order.id}
-                        value={order.sat_invoice_number}
-                        onSaved={(next) =>
-                          setSatOverrides((prev) => ({ ...prev, [order.id]: next }))
-                        }
-                      />
-                    </td>
-                    <td className="px-3 py-2">
-                      <p className="text-gray-900 dark:text-white font-bold text-xs leading-tight">
-                        {channelInfo.channel}
-                      </p>
-                      <p
-                        className="text-gray-400 dark:text-surface-500 text-[10px] font-medium truncate max-w-[160px]"
-                        title={channelInfo.detail}
-                      >
-                        {channelInfo.detail}
-                      </p>
-                      {order.customer_notes?.trim() && (
-                        <p
-                          className="text-indigo-700 dark:text-indigo-400 text-[10px] font-semibold mt-1 line-clamp-2 max-w-[200px]"
-                          title={order.customer_notes.trim()}
-                        >
-                          Nota: {order.customer_notes.trim()}
-                        </p>
-                      )}
-                      {order.serial_search_hint && (
-                        <p
-                          className="text-sky-700 dark:text-sky-400 text-[10px] font-bold mt-1 line-clamp-2 max-w-[220px]"
-                          title={order.serial_search_hint.message}
-                        >
-                          {order.serial_search_hint.message}
-                        </p>
-                      )}
-                      {!order.serial_search_hint && order.has_warranty_exchange && (
-                        <p className="text-sky-700 dark:text-sky-400 text-[10px] font-bold mt-1 line-clamp-1 max-w-[200px]">
-                          Con reemplazo por garantía
-                        </p>
-                      )}
-                    </td>
-                    <td className="px-3 py-2 text-right tabular-nums">
-                      <span className="text-emerald-700 dark:text-emerald-400 font-black text-sm">
-                        Q
-                        {(order.total_amount || 0).toLocaleString('es-GT', {
-                          minimumFractionDigits: 2,
-                          maximumFractionDigits: 2,
-                        })}
-                      </span>
-                    </td>
-                    <td className="px-3 py-2 text-center">
-                      <span
-                        className={cn(
-                          'px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider border',
-                          statusBadgeStyles[order.status] || statusBadgeStyles.draft
-                        )}
-                      >
-                        {formatSaleStatusLabel(order.status)}
-                      </span>
-                    </td>
-                    <td className="px-3 py-2">
-                      <div className="flex items-start gap-1 text-gray-600 dark:text-surface-300">
-                        <Clock className="w-3 h-3 mt-0.5 shrink-0 opacity-70" />
-                        <div className="leading-tight">
-                          <p className="text-[11px] font-bold">{fecha.date}</p>
-                          <p className="text-[10px] font-semibold text-gray-400 dark:text-surface-500 tabular-nums">
-                            {fecha.time}
+                      <div className="min-w-0 flex-1 space-y-2">
+                        <div className="flex flex-wrap items-start justify-between gap-2">
+                          <Link
+                            href={`/dashboard/ventas/${order.id}`}
+                            className="group block min-w-0 flex-1"
+                          >
+                            <p className="text-gray-900 dark:text-white font-semibold text-sm leading-snug group-hover:text-emerald-600 dark:group-hover:text-emerald-400">
+                              {order.customer?.commercial_name || 'N/A'}
+                            </p>
+                            {order.customer?.tax_id_nit ? (
+                              <p className="text-gray-400 dark:text-surface-500 text-[10px] font-medium uppercase tracking-wider">
+                                {order.customer.tax_id_nit}
+                              </p>
+                            ) : null}
+                          </Link>
+                          <span className="text-emerald-700 dark:text-emerald-400 font-black text-base tabular-nums shrink-0">
+                            Q
+                            {(order.total_amount || 0).toLocaleString('es-GT', {
+                              minimumFractionDigits: 2,
+                              maximumFractionDigits: 2,
+                            })}
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-1.5 text-xs">
+                          <div>
+                            <p className="text-[9px] font-bold uppercase tracking-wider text-gray-400 dark:text-surface-500">
+                              Invoice
+                            </p>
+                            <span className="font-mono font-bold text-[11px] text-gray-900 dark:text-white break-all">
+                              {formatInvoiceLabel(order.invoice_number) === EMPTY
+                                ? '—'
+                                : formatInvoiceLabel(order.invoice_number)}
+                            </span>
+                          </div>
+                          <div className="min-w-0">
+                            <p className="text-[9px] font-bold uppercase tracking-wider text-gray-400 dark:text-surface-500">
+                              Factura SAT
+                            </p>
+                            <div className="group min-w-0">
+                              <SatInvoiceEditCell
+                                orderId={order.id}
+                                value={order.sat_invoice_number}
+                                onSaved={(next) =>
+                                  setSatOverrides((prev) => ({ ...prev, [order.id]: next }))
+                                }
+                              />
+                            </div>
+                          </div>
+                          <div className="col-span-1 sm:col-span-2">
+                            <p className="text-[9px] font-bold uppercase tracking-wider text-gray-400 dark:text-surface-500">
+                              Canal
+                            </p>
+                            <p className="text-gray-900 dark:text-white font-bold text-xs leading-tight">
+                              {channelInfo.channel}
+                            </p>
+                            {channelInfo.detail ? (
+                              <p
+                                className="text-gray-500 dark:text-surface-400 text-[10px] font-medium break-words"
+                                title={channelInfo.detail}
+                              >
+                                {channelInfo.detail}
+                              </p>
+                            ) : null}
+                            {order.customer_notes?.trim() && (
+                              <p
+                                className="text-indigo-700 dark:text-indigo-400 text-[10px] font-semibold mt-1 break-words"
+                                title={order.customer_notes.trim()}
+                              >
+                                Nota: {order.customer_notes.trim()}
+                              </p>
+                            )}
+                            {order.serial_search_hint && (
+                              <p
+                                className="text-sky-700 dark:text-sky-400 text-[10px] font-bold mt-1 break-words"
+                                title={order.serial_search_hint.message}
+                              >
+                                {order.serial_search_hint.message}
+                              </p>
+                            )}
+                            {!order.serial_search_hint && order.has_warranty_exchange && (
+                              <p className="text-sky-700 dark:text-sky-400 text-[10px] font-bold mt-1">
+                                Con reemplazo por garantía
+                              </p>
+                            )}
+                          </div>
+                          <div className="flex flex-wrap gap-3 items-center">
+                            <div>
+                              <p className="text-[9px] font-bold uppercase tracking-wider text-gray-400 dark:text-surface-500">
+                                Estado
+                              </p>
+                              <span
+                                className={cn(
+                                  'inline-block px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider border',
+                                  statusBadgeStyles[order.status] || statusBadgeStyles.draft
+                                )}
+                              >
+                                {formatSaleStatusLabel(order.status)}
+                              </span>
+                            </div>
+                            <div className="flex items-start gap-1 text-gray-600 dark:text-surface-300">
+                              <Clock className="w-3 h-3 mt-0.5 shrink-0 opacity-70" />
+                              <div className="leading-tight">
+                                <p className="text-[11px] font-bold">{fecha.date}</p>
+                                <p className="text-[10px] font-semibold text-gray-400 dark:text-surface-500 tabular-nums">
+                                  {fecha.time}
+                                </p>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                        <div>
+                          <p className="text-[9px] font-bold uppercase tracking-wider text-gray-400 dark:text-surface-500 mb-1.5">
+                            Post-venta
                           </p>
+                          <div className="flex flex-wrap gap-2">
+                            <Link
+                              href={`/dashboard/ventas/${order.id}?accion=garantia`}
+                              onClick={() => setSelectedIds(new Set([order.id]))}
+                              className="inline-flex flex-1 min-w-[7rem] sm:flex-none items-center justify-center gap-1 px-3 py-2 rounded-lg text-[10px] font-black uppercase tracking-wide bg-sky-600 hover:bg-sky-500 text-white shadow-sm"
+                            >
+                              <ArrowLeftRight className="w-3.5 h-3.5 shrink-0" />
+                              Garantía
+                            </Link>
+                            <Link
+                              href={`/dashboard/ventas/${order.id}?accion=devolucion`}
+                              onClick={() => setSelectedIds(new Set([order.id]))}
+                              className="inline-flex flex-1 min-w-[7rem] sm:flex-none items-center justify-center gap-1 px-3 py-2 rounded-lg text-[10px] font-black uppercase tracking-wide bg-rose-600 hover:bg-rose-500 text-white shadow-sm"
+                            >
+                              <Banknote className="w-3.5 h-3.5 shrink-0" />
+                              Devolver
+                            </Link>
+                            <div className="flex items-center justify-center sm:justify-start">
+                              <DownloadWarrantyButton orderId={order.id} compact />
+                            </div>
+                          </div>
                         </div>
                       </div>
-                    </td>
-                    <td className="px-1.5 py-1.5 text-right align-middle">
-                      <div className="flex flex-col gap-1 items-stretch min-w-[92px]">
-                        <Link
-                          href={`/dashboard/ventas/${order.id}?accion=garantia`}
-                          onClick={() => {
-                            setSelectedIds(new Set([order.id]))
-                          }}
-                          className={cn(
-                            'inline-flex items-center justify-center gap-1 px-2 py-1 rounded-md text-[8px] font-black uppercase tracking-wide transition-all',
-                            isSelected
-                              ? 'bg-sky-600 text-white shadow-sm'
-                              : 'bg-sky-50 dark:bg-sky-500/15 text-sky-800 dark:text-sky-300 border border-sky-200/80 dark:border-sky-500/30 hover:bg-sky-100 dark:hover:bg-sky-500/25'
-                          )}
-                        >
-                          <ArrowLeftRight className="w-3 h-3 shrink-0" />
-                          Garantía
-                        </Link>
-                        <Link
-                          href={`/dashboard/ventas/${order.id}?accion=devolucion`}
-                          onClick={() => {
-                            setSelectedIds(new Set([order.id]))
-                          }}
-                          className={cn(
-                            'inline-flex items-center justify-center gap-1 px-2 py-1 rounded-md text-[8px] font-black uppercase tracking-wide transition-all',
-                            isSelected
-                              ? 'bg-rose-600 text-white shadow-sm'
-                              : 'bg-rose-50 dark:bg-rose-500/15 text-rose-800 dark:text-rose-300 border border-rose-200/80 dark:border-rose-500/30 hover:bg-rose-100 dark:hover:bg-rose-500/25'
-                          )}
-                        >
-                          <Banknote className="w-3 h-3 shrink-0" />
-                          Devolver
-                        </Link>
-                      </div>
-                    </td>
-                    <td className="px-3 py-2 text-right">
-                      <DownloadWarrantyButton orderId={order.id} compact />
-                    </td>
-                  </tr>
+                    </div>
+                  </li>
                 )
-              })
-            )}
-            {filteredOrders.length > 0 &&
-              Array.from({ length: padRowCount }).map((_, index) => (
-                <tr
-                  key={`pad-${index}`}
-                  className="h-11 border-b border-gray-50/80 dark:border-surface-800/60"
-                  aria-hidden
-                >
-                  <td colSpan={10} className="h-11" />
+              })}
+            </ul>
+          )}
+        </div>
+
+        {/* Escritorio: tabla densa con scroll horizontal */}
+        <div className={cn('hidden lg:block w-full flex-1 overflow-x-auto', TABLE_MIN_HEIGHT_CLASS)}>
+          <table className="w-full min-w-[960px] text-sm table-fixed border-collapse">
+            <thead>
+              <tr className="bg-gray-50 dark:bg-surface-850 border-b border-gray-100 dark:border-surface-700">
+                <th className="w-9 px-2 py-2.5 text-center align-middle">
+                  <input
+                    ref={headerCheckboxRef}
+                    type="checkbox"
+                    checked={allPageSelected}
+                    onChange={toggleSelectAllPage}
+                    disabled={paginatedOrders.length === 0}
+                    className="h-3.5 w-3.5 rounded border-gray-400 accent-emerald-600 cursor-pointer disabled:opacity-40"
+                    title="Seleccionar las 25 filas de esta página"
+                    aria-label="Seleccionar filas de la página actual"
+                  />
+                </th>
+                <th className="relative text-left px-3 py-2.5 align-middle text-gray-500 dark:text-surface-400 text-[10px] font-bold uppercase tracking-widest">
+                  <ExcelColumnFilter
+                    label="Cliente"
+                    options={options.cliente}
+                    selected={columnFilters.cliente ?? null}
+                    onChange={(next) => setColumnFilter('cliente', next)}
+                    sortDir={sort?.columnId === 'cliente' ? sort.dir : null}
+                    onSort={(dir) => handleSort('cliente', dir)}
+                  />
+                </th>
+                <th className="relative text-left px-2 py-1.5 text-gray-500 dark:text-surface-400 text-[10px] font-bold uppercase tracking-widest">
+                  <ExcelColumnFilter
+                    label="Invoice"
+                    options={options.invoice}
+                    selected={columnFilters.invoice ?? null}
+                    onChange={(next) => setColumnFilter('invoice', next)}
+                    sortDir={sort?.columnId === 'invoice' ? sort.dir : null}
+                    onSort={(dir) => handleSort('invoice', dir)}
+                  />
+                </th>
+                <th className="relative text-left px-2 py-1.5 text-gray-500 dark:text-surface-400 text-[10px] font-bold uppercase tracking-widest">
+                  <ExcelColumnFilter
+                    label="Factura SAT"
+                    options={options.sat}
+                    selected={columnFilters.sat ?? null}
+                    onChange={(next) => setColumnFilter('sat', next)}
+                    sortDir={sort?.columnId === 'sat' ? sort.dir : null}
+                    onSort={(dir) => handleSort('sat', dir)}
+                  />
+                </th>
+                <th className="relative text-left px-3 py-2 text-gray-500 dark:text-surface-400 text-[10px] font-bold uppercase tracking-widest">
+                  <ExcelColumnFilter
+                    label="Canal"
+                    options={options.canal}
+                    selected={columnFilters.canal ?? null}
+                    onChange={(next) => setColumnFilter('canal', next)}
+                    sortDir={sort?.columnId === 'canal' ? sort.dir : null}
+                    onSort={(dir) => handleSort('canal', dir)}
+                  />
+                </th>
+                <th className="relative text-right px-3 py-2 text-gray-500 dark:text-surface-400 text-[10px] font-bold uppercase tracking-widest">
+                  <div className="inline-flex justify-end w-full">
+                    <ExcelColumnFilter
+                      label="Total"
+                      options={options.total}
+                      selected={columnFilters.total ?? null}
+                      onChange={(next) => setColumnFilter('total', next)}
+                      sortDir={sort?.columnId === 'total' ? sort.dir : null}
+                      onSort={(dir) => handleSort('total', dir)}
+                    />
+                  </div>
+                </th>
+                <th className="relative text-center px-3 py-2 text-gray-500 dark:text-surface-400 text-[10px] font-bold uppercase tracking-widest">
+                  <ExcelColumnFilter
+                    label="Estado"
+                    options={options.estado}
+                    selected={columnFilters.estado ?? null}
+                    onChange={(next) => setColumnFilter('estado', next)}
+                    sortDir={sort?.columnId === 'estado' ? sort.dir : null}
+                    onSort={(dir) => handleSort('estado', dir)}
+                    align="center"
+                  />
+                </th>
+                <th className="relative text-left px-3 py-2 text-gray-500 dark:text-surface-400 text-[10px] font-bold uppercase tracking-widest">
+                  <ExcelColumnFilter
+                    label="Fecha"
+                    options={options.fecha}
+                    selected={columnFilters.fecha ?? null}
+                    onChange={(next) => setColumnFilter('fecha', next)}
+                    sortDir={sort?.columnId === 'fecha' ? sort.dir : null}
+                    onSort={(dir) => handleSort('fecha', dir)}
+                  />
+                </th>
+                <th className="text-right px-2 py-2 text-gray-500 dark:text-surface-400 text-[10px] font-bold uppercase tracking-widest">
+                  Post-venta
+                </th>
+                <th className="text-right px-3 py-2 text-gray-500 dark:text-surface-400 text-[10px] font-bold uppercase tracking-widest">
+                  Política
+                </th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100 dark:divide-surface-800 bg-white dark:bg-surface-900 align-top">
+              {filteredOrders.length === 0 ? (
+                <tr>
+                  <td colSpan={10} className="px-3 py-10 text-center">
+                    <div className="flex flex-col items-center gap-2">
+                      <ShoppingCart className="w-8 h-8 text-gray-300 dark:text-surface-700" />
+                      <p className="text-gray-600 dark:text-surface-400 font-bold text-sm">
+                        {activeFilterCount > 0
+                          ? 'Ninguna venta coincide con los filtros'
+                          : searchQuery
+                            ? `Sin resultados para “${searchQuery}”`
+                            : 'Sin ventas en este período'}
+                      </p>
+                      {activeFilterCount === 0 && (
+                        <Link href="/dashboard/ventas/nuevo" className="text-emerald-600 font-bold text-xs">
+                          Crear venta →
+                        </Link>
+                      )}
+                      {activeFilterCount > 0 && (
+                        <button
+                          type="button"
+                          onClick={clearAllColumnFilters}
+                          className="text-emerald-600 font-bold text-xs"
+                        >
+                          Limpiar filtros
+                        </button>
+                      )}
+                    </div>
+                  </td>
                 </tr>
-              ))}
-          </tbody>
-        </table>
+              ) : (
+                paginatedOrders.map((order) => {
+                  const channelInfo = formatSalesChannel(
+                    order.payment_method,
+                    order.internal_notes,
+                    order.customer_notes
+                  )
+                  const fecha = formatFechaParts(order.created_at)
+                  const isSelected = selectedIds.has(order.id)
+                  return (
+                    <tr
+                      key={`desktop-${order.id}`}
+                      className={cn(
+                        'h-11 hover:bg-gray-50 dark:hover:bg-surface-800/50 transition-colors group',
+                        isSelected && 'bg-emerald-500/5 dark:bg-emerald-500/10'
+                      )}
+                    >
+                      <td className="px-2 py-2.5 text-center align-middle">
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={() => toggleRowSelection(order.id)}
+                          className="h-3.5 w-3.5 rounded border-gray-400 accent-emerald-600 cursor-pointer"
+                          aria-label={`Seleccionar venta ${order.invoice_number || order.id}`}
+                        />
+                      </td>
+                      <td className="px-3 py-2.5 align-middle">
+                        <Link href={`/dashboard/ventas/${order.id}`} className="block min-w-0 hover:opacity-90">
+                          <p className="text-gray-900 dark:text-white font-semibold text-xs leading-tight hover:text-emerald-600 dark:hover:text-emerald-400">
+                            {order.customer?.commercial_name || 'N/A'}
+                          </p>
+                          <p className="text-gray-400 dark:text-surface-500 text-[10px] font-medium uppercase tracking-wider">
+                            {order.customer?.tax_id_nit}
+                          </p>
+                        </Link>
+                      </td>
+                      <td className="px-2 py-1.5">
+                        <span className="font-mono font-bold text-[10px] text-gray-900 dark:text-white">
+                          {formatInvoiceLabel(order.invoice_number) === EMPTY
+                            ? '—'
+                            : formatInvoiceLabel(order.invoice_number)}
+                        </span>
+                      </td>
+                      <td className="px-2 py-1.5">
+                        <SatInvoiceEditCell
+                          orderId={order.id}
+                          value={order.sat_invoice_number}
+                          onSaved={(next) =>
+                            setSatOverrides((prev) => ({ ...prev, [order.id]: next }))
+                          }
+                        />
+                      </td>
+                      <td className="px-3 py-2">
+                        <p className="text-gray-900 dark:text-white font-bold text-xs leading-tight">
+                          {channelInfo.channel}
+                        </p>
+                        <p
+                          className="text-gray-400 dark:text-surface-500 text-[10px] font-medium truncate max-w-[160px] lg:max-w-[200px] xl:max-w-[240px]"
+                          title={channelInfo.detail}
+                        >
+                          {channelInfo.detail}
+                        </p>
+                        {order.customer_notes?.trim() && (
+                          <p
+                            className="text-indigo-700 dark:text-indigo-400 text-[10px] font-semibold mt-1 line-clamp-2 max-w-[220px] xl:max-w-[280px]"
+                            title={order.customer_notes.trim()}
+                          >
+                            Nota: {order.customer_notes.trim()}
+                          </p>
+                        )}
+                        {order.serial_search_hint && (
+                          <p
+                            className="text-sky-700 dark:text-sky-400 text-[10px] font-bold mt-1 line-clamp-2 max-w-[220px] xl:max-w-[280px]"
+                            title={order.serial_search_hint.message}
+                          >
+                            {order.serial_search_hint.message}
+                          </p>
+                        )}
+                        {!order.serial_search_hint && order.has_warranty_exchange && (
+                          <p className="text-sky-700 dark:text-sky-400 text-[10px] font-bold mt-1 line-clamp-1 max-w-[200px]">
+                            Con reemplazo por garantía
+                          </p>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 text-right tabular-nums">
+                        <span className="text-emerald-700 dark:text-emerald-400 font-black text-sm">
+                          Q
+                          {(order.total_amount || 0).toLocaleString('es-GT', {
+                            minimumFractionDigits: 2,
+                            maximumFractionDigits: 2,
+                          })}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 text-center">
+                        <span
+                          className={cn(
+                            'px-2 py-0.5 rounded-md text-[9px] font-black uppercase tracking-wider border',
+                            statusBadgeStyles[order.status] || statusBadgeStyles.draft
+                          )}
+                        >
+                          {formatSaleStatusLabel(order.status)}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2">
+                        <div className="flex items-start gap-1 text-gray-600 dark:text-surface-300">
+                          <Clock className="w-3 h-3 mt-0.5 shrink-0 opacity-70" />
+                          <div className="leading-tight">
+                            <p className="text-[11px] font-bold">{fecha.date}</p>
+                            <p className="text-[10px] font-semibold text-gray-400 dark:text-surface-500 tabular-nums">
+                              {fecha.time}
+                            </p>
+                          </div>
+                        </div>
+                      </td>
+                      <td className="px-1.5 py-1.5 text-right align-middle">
+                        <div className="flex flex-col gap-1 items-stretch min-w-[92px]">
+                          <Link
+                            href={`/dashboard/ventas/${order.id}?accion=garantia`}
+                            onClick={() => {
+                              setSelectedIds(new Set([order.id]))
+                            }}
+                            className={cn(
+                              'inline-flex items-center justify-center gap-1 px-2 py-1 rounded-md text-[8px] font-black uppercase tracking-wide transition-all',
+                              isSelected
+                                ? 'bg-sky-600 text-white shadow-sm'
+                                : 'bg-sky-50 dark:bg-sky-500/15 text-sky-800 dark:text-sky-300 border border-sky-200/80 dark:border-sky-500/30 hover:bg-sky-100 dark:hover:bg-sky-500/25'
+                            )}
+                          >
+                            <ArrowLeftRight className="w-3 h-3 shrink-0" />
+                            Garantía
+                          </Link>
+                          <Link
+                            href={`/dashboard/ventas/${order.id}?accion=devolucion`}
+                            onClick={() => {
+                              setSelectedIds(new Set([order.id]))
+                            }}
+                            className={cn(
+                              'inline-flex items-center justify-center gap-1 px-2 py-1 rounded-md text-[8px] font-black uppercase tracking-wide transition-all',
+                              isSelected
+                                ? 'bg-rose-600 text-white shadow-sm'
+                                : 'bg-rose-50 dark:bg-rose-500/15 text-rose-800 dark:text-rose-300 border border-rose-200/80 dark:border-rose-500/30 hover:bg-rose-100 dark:hover:bg-rose-500/25'
+                            )}
+                          >
+                            <Banknote className="w-3 h-3 shrink-0" />
+                            Devolver
+                          </Link>
+                        </div>
+                      </td>
+                      <td className="px-3 py-2 text-right">
+                        <DownloadWarrantyButton orderId={order.id} compact />
+                      </td>
+                    </tr>
+                  )
+                })
+              )}
+              {filteredOrders.length > 0 &&
+                Array.from({ length: padRowCount }).map((_, index) => (
+                  <tr
+                    key={`pad-${index}`}
+                    className="h-11 border-b border-gray-50/80 dark:border-surface-800/60"
+                    aria-hidden
+                  >
+                    <td colSpan={10} className="h-11" />
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       {filteredOrders.length > 0 && (

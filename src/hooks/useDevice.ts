@@ -7,8 +7,8 @@ export type DeviceType = 'mobile' | 'tablet' | 'desktop'
 /**
  * Hook para detectar el tipo de dispositivo basado en el ancho de la pantalla
  * - Mobile: < 768px
- * - Tablet: 768px - 1279px  
- * - Desktop: >= 1280px
+ * - Tablet: 768px - 1023px
+ * - Desktop: >= 1024px (alineado con breakpoint `lg` de Tailwind)
  */
 export function useDevice(): DeviceType {
     // Siempre 'desktop' en el primer paint (SSR + hidratación) para evitar mismatch.
@@ -21,7 +21,7 @@ export function useDevice(): DeviceType {
 
             if (width < 768) {
                 setDevice('mobile')
-            } else if (width >= 768 && width < 1280) {
+            } else if (width >= 768 && width < 1024) {
                 setDevice('tablet')
             } else {
                 setDevice('desktop')

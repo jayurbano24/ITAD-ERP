@@ -1,7 +1,6 @@
 import { redirect } from 'next/navigation'
 import { createClient } from '@/lib/supabase/server'
-import { PortalSidebar } from './components/PortalSidebar'
-import { PortalHeader } from './components/PortalHeader'
+import { PortalShell } from './components/PortalShell'
 
 export default async function PortalLayout({
   children,
@@ -44,19 +43,13 @@ export default async function PortalLayout({
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 flex">
-      <PortalSidebar 
-        userName={profile.full_name || user.email || 'Cliente'}
-        clientName={profile.client?.commercial_name || profile.client?.legal_name || 'Mi Empresa'}
-        clientLogo={profile.client?.logo_url}
-      />
-      <main className="flex-1 flex flex-col">
-        <PortalHeader userName={profile.full_name || 'Cliente'} />
-        <div className="flex-1 overflow-auto">
-          {children}
-        </div>
-      </main>
-    </div>
+    <PortalShell
+      userName={profile.full_name || user.email || 'Cliente'}
+      clientName={profile.client?.commercial_name || profile.client?.legal_name || 'Mi Empresa'}
+      clientLogo={profile.client?.logo_url}
+    >
+      {children}
+    </PortalShell>
   )
 }
 

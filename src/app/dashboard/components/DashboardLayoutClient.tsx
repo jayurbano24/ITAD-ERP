@@ -44,7 +44,7 @@ export default function DashboardLayoutClient({
         setMounted(true)
     }, [])
 
-    // Evitar hidratar un <button> que el SSR no renderizó (viewport < 1280).
+    // Evitar hidratar un <button> que el SSR no renderizó (viewport < 1024, breakpoint `lg`).
     const showHamburger = mounted && device !== 'desktop'
 
     return (
@@ -64,10 +64,10 @@ export default function DashboardLayoutClient({
                 companyPrimaryColor={companyPrimaryColor}
                 companySecondaryColor={companySecondaryColor}
             />
-            <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+            <div className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden max-w-[100vw]">
                 {/* Top Header Barra */}
-                <header className="h-16 border-b border-gray-100 dark:border-gray-800 flex items-center justify-between px-4 sm:px-8 bg-white/50 dark:bg-[#0f1419]/50 backdrop-blur-sm z-10 transition-colors duration-300">
-                    <div className="flex items-center gap-4">
+                <header className="min-h-14 sm:h-16 border-b border-gray-100 dark:border-gray-800 flex flex-wrap items-center justify-between gap-2 py-2 px-3 sm:px-6 lg:px-8 bg-white/50 dark:bg-[#0f1419]/50 backdrop-blur-sm z-10 transition-colors duration-300 shrink-0">
+                    <div className="flex items-center gap-2 sm:gap-4 min-w-0">
                         {/* Botón hamburguesa solo en móvil/tablet (post-mount) */}
                         {showHamburger && (
                             <button
@@ -79,7 +79,7 @@ export default function DashboardLayoutClient({
                             </button>
                         )}
                     </div>
-                    <div className="flex items-center gap-4">
+                    <div className="flex items-center gap-2 sm:gap-4 shrink-0 ml-auto">
                         <ThemeToggle />
                         <div className="h-8 w-px bg-surface-200 dark:bg-surface-800 mx-2" />
                         <div className="flex items-center gap-2">
@@ -94,7 +94,7 @@ export default function DashboardLayoutClient({
                     </div>
                 </header>
 
-                <main className="flex-1 overflow-auto p-0">
+                <main className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden p-0 [overflow-x:clip]">
                     {children}
                 </main>
             </div>
