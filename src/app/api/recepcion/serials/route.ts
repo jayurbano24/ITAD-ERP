@@ -35,14 +35,16 @@ const lineFilter = <T extends { eq: (c: string, v: string) => T }>(
  * POST actions:
  * - scan: pitolea una serie en un cupo vacío (no crea filas)
  * - additional: agrega un cupo vacío extra a la línea
+ * - setQuantity: fija cantidad cerrada (enteros) de cupos en la línea
  */
 export async function POST(request: Request) {
   try {
     const body = (await request.json()) as {
-      action?: 'scan' | 'additional'
+      action?: 'scan' | 'additional' | 'setQuantity'
       ticketId?: string
       templateItemId?: string
       serial?: string
+      quantity?: number
     }
 
     const action = body.action || 'scan'
@@ -103,6 +105,99 @@ export async function POST(request: Request) {
       }
 
       return NextResponse.json({ ok: true, mode: 'additional', item: inserted })
+    }
+
+    if (action === 'setQuantity') {
+      const targetQty = Math.floor(Number(body.quantity))
+      if (!Number.isFinite(targetQty) || targetQty < 1) {
+        return NextResponse.json(
+          { error: 'La cantidad debe ser un entero mayor o igual a 1' },
+          { status: 400 }
+        )
+      }
+
+      let allQuery = supabase
+        .from('ticket_items')
+        .select('id, collected_serial, expected_serial, created_at')
+        .eq('ticket_id', ticketId)
+        .order('created_at', { ascending: true })
+      allQuery = lineFilter(allQuery, template)
+
+      const { data: lineItems, error: listError } = await allQuery
+      if (listError) {
+        return NextResponse.json({ error: listError.message }, { status: 500 })
+      }
+
+      const items = lineItems || []
+      const current = items.length
+      const withSerial = items.filter(
+        (row) => ((row.collected_serial || row.expected_serial) || '').trim().length > 0
+      ).length
+
+      if (targetQty < withSerial) {
+        return NextResponse.json(
+          {
+            error: `No puede bajar de ${withSerial}: ya hay ${withSerial} serie(s) capturada(s)`,
+          },
+          { status: 400 }
+        )
+      }
+
+      if (targetQty === current) {
+        return NextResponse.json({ ok: true, mode: 'setQuantity', quantity: targetQty })
+      }
+
+      if (targetQty > current) {
+        const toAdd = targetQty - current
+        const rows = Array.from({ length: toAdd }, () => ({
+          ticket_id: ticketId,
+          brand: template.brand,
+          model: template.model,
+          color: template.color,
+          product_type: template.product_type,
+          box_number: template.box_number ?? 0,
+          box_sku: template.box_sku,
+          box_seal: template.box_seal,
+          box_reception_code: template.box_reception_code,
+          brand_id: template.brand_id,
+          model_id: template.model_id,
+          product_type_id: template.product_type_id,
+          expected_serial: null,
+          collected_serial: null,
+          validation_status: template.validation_status || 'PENDIENTE_VALIDACION',
+        }))
+        const { error: insertError } = await supabase.from('ticket_items').insert(rows)
+        if (insertError) {
+          return NextResponse.json({ error: insertError.message }, { status: 500 })
+        }
+        return NextResponse.json({ ok: true, mode: 'setQuantity', quantity: targetQty })
+      }
+
+      const toRemove = current - targetQty
+      const emptySlots = items.filter(
+        (row) => !((row.collected_serial || row.expected_serial) || '').trim()
+      )
+      if (emptySlots.length < toRemove) {
+        return NextResponse.json(
+          {
+            error: `Solo puede eliminar ${emptySlots.length} cupo(s) vacío(s). Quite series o suba la cantidad mínima a ${withSerial}.`,
+          },
+          { status: 400 }
+        )
+      }
+
+      const idsToDelete = emptySlots.slice(-toRemove).map((row) => row.id)
+      const { error: deleteError } = await supabase
+        .from('ticket_items')
+        .delete()
+        .in('id', idsToDelete)
+        .eq('ticket_id', ticketId)
+
+      if (deleteError) {
+        return NextResponse.json({ error: deleteError.message }, { status: 500 })
+      }
+
+      return NextResponse.json({ ok: true, mode: 'setQuantity', quantity: targetQty })
     }
 
     // action === 'scan'

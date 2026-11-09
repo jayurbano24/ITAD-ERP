@@ -1,8 +1,27 @@
 'use client'
 
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
-import { Package, Printer, Warehouse, X, Truck, Trash2, AlertTriangle, Download, FileText, ShieldCheck, Settings, Check, LogOut, CheckSquare, CircleDollarSign, FileSpreadsheet, Wrench } from 'lucide-react'
+import {
+  Package,
+  Printer,
+  Warehouse,
+  X,
+  Truck,
+  Trash2,
+  AlertTriangle,
+  Download,
+  FileText,
+  ShieldCheck,
+  Settings,
+  Check,
+  LogOut,
+  CheckSquare,
+  CircleDollarSign,
+  FileSpreadsheet,
+  Wrench,
+  Plus,
+} from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Text } from '@/components/ui/Text'
 import { FormLabel } from '@/components/ui/FormLabel'
@@ -13,6 +32,10 @@ import MoveItemsModal from '@/components/MoveItemsModal'
 import DestructionModal from '@/components/DestructionModal'
 import DestructionDispatchModal from './DestructionDispatchModal'
 import { useToast } from '@/context/ToastContext'
+import {
+  CLASSIFICATION_C_OPTIONS,
+  CLASSIFICATION_F_OPTIONS,
+} from '@/lib/classifications/workshopGrades'
 
 type WorkshopClassifications = {
   rec?: string
@@ -23,12 +46,16 @@ type WorkshopClassifications = {
 }
 type HardwareSpecs = {
   processor?: string
+  processor_brand?: string
+  processor_generation?: string
+  processor_family?: string
   ram_capacity?: string
   ram_type?: string
   disk_capacity?: string
   disk_type?: string
   keyboard_type?: string
   keyboard_version?: string
+  screen_size?: string
   bios_version?: string
   accessories?: any[]
 }
@@ -43,7 +70,7 @@ const AVAILABLE_COLUMNS = [
   { id: 'condition', label: 'Condición' },
   { id: 'asset_type', label: 'Tipo' },
   { id: 'color', label: 'Color' },
-  { id: 'qc_out', label: 'QC-OUT' },
+  { id: 'qc_out', label: 'F / C' },
   { id: 'rec_in', label: 'R2 / Sanit.' },
   { id: 'specs', label: 'Especificaciones' },
   { id: 'location', label: 'Ubicación' },
@@ -184,6 +211,17 @@ type WarehouseAssetRow = {
 
 const EMPTY_FILTER_LABEL = '(Vacío)'
 
+function opensEquipmentEditorOnSerial(warehouseCode: string | null | undefined, sectionCode: string) {
+  const code = warehouseCode || sectionCode
+  return code === 'BOD-REC' || code === 'BOD-REM'
+}
+
+function displayFcClassifications(asset: WarehouseAssetRow): { f?: string; c?: string } {
+  const f = asset.outputClassifications?.f || asset.inputClassifications?.f
+  const c = asset.outputClassifications?.c || asset.inputClassifications?.c
+  return { f, c }
+}
+
 function getColumnFilterValue(asset: WarehouseAssetRow, columnId: string): string {
   switch (columnId) {
     case 'serial':
@@ -212,10 +250,8 @@ function getColumnFilterValue(asset: WarehouseAssetRow, columnId: string): strin
       return parts.length > 0 ? parts.join(' / ') : EMPTY_FILTER_LABEL
     }
     case 'qc_out': {
-      const parts = [
-        asset.outputClassifications?.f,
-        asset.outputClassifications?.c,
-      ].filter(Boolean)
+      const { f, c } = displayFcClassifications(asset)
+      const parts = [f, c].filter(Boolean)
       return parts.length > 0 ? parts.join(' / ') : EMPTY_FILTER_LABEL
     }
     case 'location':
@@ -269,6 +305,253 @@ const DATA_SANITIZATION_OPTIONS = [
   { value: 'D1', label: 'D1 — Pre-Sanitization' },
   { value: 'D2', label: 'D2 — Non-Data' },
 ]
+
+const RAM_CAPACITY_OPTIONS = ['4GB', '8GB', '16GB', '32GB', '64GB', '128GB']
+const RAM_TYPE_OPTIONS = ['DDR3', 'DDR4', 'DDR5', 'LPDDR4', 'LPDDR5']
+const DISK_CAPACITY_OPTIONS = ['128GB', '256GB', '512GB', '1024GB', '1TB', '2TB', '4TB']
+const DISK_TYPE_OPTIONS = ['HDD', 'SSD', 'NVMe', 'eMMC', 'Hybrid']
+const SCREEN_SIZE_OPTIONS = [
+  '10.5"',
+  '11.6"',
+  '12"',
+  '13.3"',
+  '14"',
+  '15.6"',
+  '16"',
+  '17.3"',
+  '21.5"',
+  '23.8"',
+  '27"',
+  '32"',
+  'Otra',
+]
+const KEYBOARD_TYPE_OPTIONS = ['US', 'UK', 'ES', 'LATAM', 'ISO', 'Otro']
+const KEYBOARD_VERSION_OPTIONS = ['Normal', 'Retroiluminado', 'Mecánico', 'Backlit']
+const PRODUCT_TYPE_OPTIONS = ['Laptop', 'Desktop', 'Servidor']
+const PROCESSOR_BRAND_OPTIONS = ['Intel', 'AMD', 'Apple', 'Otro']
+
+const PROCESSOR_GENERATION_INTEL = [
+  '1ª Gen',
+  '2ª Gen',
+  '3ª Gen',
+  '4ª Gen',
+  '5ª Gen',
+  '6ª Gen',
+  '7ª Gen',
+  '8ª Gen',
+  '9ª Gen',
+  '10ª Gen',
+  '11ª Gen',
+  '12ª Gen',
+  '13ª Gen',
+  '14ª Gen',
+  'Core Ultra Serie 1',
+  'Core Ultra Serie 2',
+  'Core Ultra Serie 3',
+]
+const PROCESSOR_GENERATION_AMD = [
+  'AMD FX',
+  'Ryzen 1000',
+  'Ryzen 2000',
+  'Ryzen 3000',
+  'Ryzen 4000',
+  'Ryzen 5000',
+  'Ryzen 6000',
+  'Ryzen 7000',
+  'Ryzen 8000',
+  'Ryzen 9000',
+  'Ryzen AI 300',
+  'Ryzen AI 400',
+]
+const PROCESSOR_FAMILY_INTEL = [
+  'Core i3',
+  'Core i5',
+  'Core i7',
+  'Core i9',
+  'Core Ultra',
+  'Pentium',
+  'Celeron',
+  'Xeon',
+]
+const PROCESSOR_FAMILY_AMD = [
+  'AMD FX',
+  'Ryzen 3',
+  'Ryzen 5',
+  'Ryzen 7',
+  'Ryzen 9',
+  'Ryzen AI',
+  'EPYC',
+  'Athlon',
+]
+const PROCESSOR_FAMILY_APPLE = ['Apple M', 'Apple Silicon']
+const PROCESSOR_GENERATION_APPLE = ['Apple M1', 'Apple M2', 'Apple M3', 'Apple M4']
+const PLATFORM_GENERATION_OPTIONS = ['PC Gen 1', 'PC Gen 2', 'PC Gen 3', 'PC Gen 4', 'PC Gen 5', 'PC Gen 6+']
+const PROCESSOR_GENERATION_OPTIONS = [
+  ...PROCESSOR_GENERATION_INTEL,
+  ...PROCESSOR_GENERATION_AMD,
+  ...PROCESSOR_GENERATION_APPLE,
+  ...PLATFORM_GENERATION_OPTIONS,
+]
+
+type ProcessorCatalogRow = {
+  id: string
+  name: string
+  brand?: string | null
+  generation?: string | null
+  family?: string | null
+}
+
+function intelGenLabel(genPrefix: number): string {
+  if (genPrefix >= 14) return '14ª Gen'
+  if (genPrefix >= 1 && genPrefix <= 13) return `${genPrefix}ª Gen`
+  return ''
+}
+
+function inferProcessorFamily(processor: string, brand: string): string {
+  const p = processor.toUpperCase()
+  if (!p.trim()) return ''
+
+  if (p.includes('CORE ULTRA') || p.includes('ULTRA 5') || p.includes('ULTRA 7') || p.includes('ULTRA 9')) {
+    return 'Core Ultra'
+  }
+  if (/\bI9[\s-]/.test(p) || p.includes('CORE I9')) return 'Core i9'
+  if (/\bI7[\s-]/.test(p) || p.includes('CORE I7')) return 'Core i7'
+  if (/\bI5[\s-]/.test(p) || p.includes('CORE I5')) return 'Core i5'
+  if (/\bI3[\s-]/.test(p) || p.includes('CORE I3')) return 'Core i3'
+  if (p.includes('CELERON')) return 'Celeron'
+  if (p.includes('PENTIUM')) return 'Pentium'
+  if (p.includes('XEON')) return 'Xeon'
+
+  if (p.includes('RYZEN AI')) return 'Ryzen AI'
+  if (p.includes('RYZEN 9') || /RYZEN\s*9\b/i.test(processor)) return 'Ryzen 9'
+  if (p.includes('RYZEN 7') || /RYZEN\s*7\b/i.test(processor)) return 'Ryzen 7'
+  if (p.includes('RYZEN 5') || /RYZEN\s*5\b/i.test(processor)) return 'Ryzen 5'
+  if (p.includes('RYZEN 3') || /RYZEN\s*3\b/i.test(processor)) return 'Ryzen 3'
+  if (p.includes('AMD FX') || /\bFX[\s-]/.test(p)) return 'AMD FX'
+  if (p.includes('EPYC')) return 'EPYC'
+  if (p.includes('ATHLON')) return 'Athlon'
+
+  if (brand === 'Apple' || p.includes('APPLE') || p.includes(' M1') || p.includes(' M2')) {
+    return 'Apple M'
+  }
+
+  return ''
+}
+
+function inferProcessorGeneration(processor: string, brand: string): string {
+  const p = processor.toUpperCase()
+  if (!p.trim()) return ''
+
+  if (p.includes('ULTRA')) {
+    if (p.includes('SERIE 3') || p.includes('SERIES 3')) return 'Core Ultra Serie 3'
+    if (p.includes('SERIE 2') || p.includes('SERIES 2')) return 'Core Ultra Serie 2'
+    return 'Core Ultra Serie 1'
+  }
+
+  const intelSku = p.match(/I[3579][\s-]*(\d{4,5})/i) || p.match(/[\s-](\d{4,5})(?:[A-Z]{0,3})?(?:\s|$)/i)
+  if (intelSku) {
+    const digits = intelSku[1]
+    const genPrefix = parseInt(digits.slice(0, 2), 10)
+    const label = intelGenLabel(genPrefix)
+    if (label) return label
+  }
+
+  if (p.includes('AMD FX') || /\bFX[\s-]/.test(p)) return 'AMD FX'
+
+  const ryzen = p.match(/RYZEN\s*(?:AI\s*)?[35779]?\s*(\d{3,4})/i)
+  if (ryzen) {
+    const raw = ryzen[1]
+    if (p.includes('RYZEN AI')) {
+      if (raw.startsWith('4') || parseInt(raw, 10) >= 400) return 'Ryzen AI 400'
+      return 'Ryzen AI 300'
+    }
+    const series = raw.charAt(0)
+    const map: Record<string, string> = {
+      '1': 'Ryzen 1000',
+      '2': 'Ryzen 2000',
+      '3': 'Ryzen 3000',
+      '4': 'Ryzen 4000',
+      '5': 'Ryzen 5000',
+      '6': 'Ryzen 6000',
+      '7': 'Ryzen 7000',
+      '8': 'Ryzen 8000',
+      '9': 'Ryzen 9000',
+    }
+    return map[series] || ''
+  }
+
+  if (brand === 'Apple' || p.includes('APPLE')) {
+    if (p.includes('M4')) return 'Apple M4'
+    if (p.includes('M3')) return 'Apple M3'
+    if (p.includes('M2')) return 'Apple M2'
+    if (p.includes('M1')) return 'Apple M1'
+  }
+
+  const pcGen = p.match(/\(GEN\s*(\d+)\)/i) || p.match(/\bGEN\s*(\d+)\b/i)
+  if (pcGen) {
+    const n = parseInt(pcGen[1], 10)
+    if (n >= 6) return 'PC Gen 6+'
+    return `PC Gen ${n}`
+  }
+
+  return ''
+}
+
+function inferProcessorBrand(processor: string): string {
+  const p = processor.toUpperCase()
+  if (!p.trim()) return ''
+  if (
+    p.includes('RYZEN') ||
+    p.includes('ATHLON') ||
+    p.includes('EPYC') ||
+    p.includes('THREADRIPPER') ||
+    p.includes(' AMD ')
+  ) {
+    return 'AMD'
+  }
+  if (p.startsWith('AMD ') || p.includes('AMD RYZEN')) return 'AMD'
+  if (
+    p.includes('CORE I') ||
+    p.includes('CELERON') ||
+    p.includes('PENTIUM') ||
+    p.includes('XEON') ||
+    p.includes('INTEL')
+  ) {
+    return 'Intel'
+  }
+  if (p.includes('APPLE') || p.includes(' M1') || p.includes(' M2') || p.includes(' M3')) return 'Apple'
+  return ''
+}
+
+function processorMatchesBrand(name: string, brand: string, catalogBrand?: string | null): boolean {
+  if (!brand) return true
+  const stored = (catalogBrand || '').trim()
+  if (stored) return stored.toLowerCase() === brand.toLowerCase()
+  const inferred = inferProcessorBrand(name)
+  if (inferred) return inferred === brand
+  return brand === 'Otro'
+}
+
+function selectWithCustomOptions(
+  value: string,
+  options: string[],
+  emptyLabel: string,
+  onChange: (v: string) => void,
+  className: string
+) {
+  const extra = value && !options.includes(value)
+  return (
+    <select value={value} onChange={(e) => onChange(e.target.value)} className={className}>
+      <option value="">{emptyLabel}</option>
+      {extra ? <option value={value}>{value}</option> : null}
+      {options.map((opt) => (
+        <option key={opt} value={opt}>
+          {opt}
+        </option>
+      ))}
+    </select>
+  )
+}
 
 type WarehouseSection = {
   key: string
@@ -396,6 +679,24 @@ export default function WarehouseAssetTable({ sections, unified = false }: Wareh
   const [editColor, setEditColor] = useState('')
   const [editR2Applicability, setEditR2Applicability] = useState('')
   const [editDataSanitization, setEditDataSanitization] = useState('')
+  const [editClassificationF, setEditClassificationF] = useState('')
+  const [editClassificationC, setEditClassificationC] = useState('')
+  const [editAssetType, setEditAssetType] = useState('')
+  const [editProcessorBrand, setEditProcessorBrand] = useState('')
+  const [editProcessorFamily, setEditProcessorFamily] = useState('')
+  const [editProcessorGeneration, setEditProcessorGeneration] = useState('')
+  const [editProcessor, setEditProcessor] = useState('')
+  const [processorCatalog, setProcessorCatalog] = useState<ProcessorCatalogRow[]>([])
+  const [newProcessorDraft, setNewProcessorDraft] = useState('')
+  const [addingProcessor, setAddingProcessor] = useState(false)
+  const [editRamCapacity, setEditRamCapacity] = useState('')
+  const [editRamType, setEditRamType] = useState('')
+  const [editDiskCapacity, setEditDiskCapacity] = useState('')
+  const [editDiskType, setEditDiskType] = useState('')
+  const [editScreenSize, setEditScreenSize] = useState('')
+  const [editKeyboardType, setEditKeyboardType] = useState('')
+  const [editKeyboardVersion, setEditKeyboardVersion] = useState('')
+  const [editReceptionNotes, setEditReceptionNotes] = useState('')
   const [savingReception, setSavingReception] = useState(false)
 
   const handleToggleColumn = useCallback((id: string) => {
@@ -403,6 +704,90 @@ export default function WarehouseAssetTable({ sections, unified = false }: Wareh
   }, []);
 
   const { toast } = useToast()
+
+  const processorNameOptions = useMemo(() => {
+    const names = processorCatalog
+      .filter((p) => processorMatchesBrand(p.name, editProcessorBrand, p.brand))
+      .map((p) => p.name)
+    return Array.from(new Set(names)).sort((a, b) => a.localeCompare(b, 'es'))
+  }, [processorCatalog, editProcessorBrand])
+
+  const processorFamilyOptions = useMemo(() => {
+    if (editProcessorBrand === 'Intel') return [...PROCESSOR_FAMILY_INTEL]
+    if (editProcessorBrand === 'AMD') return [...PROCESSOR_FAMILY_AMD]
+    if (editProcessorBrand === 'Apple') return [...PROCESSOR_FAMILY_APPLE]
+    return [...PROCESSOR_FAMILY_INTEL, ...PROCESSOR_FAMILY_AMD, ...PROCESSOR_FAMILY_APPLE]
+  }, [editProcessorBrand])
+
+  const processorGenerationOptions = useMemo(() => {
+    if (editProcessorBrand === 'Intel') {
+      return [...PROCESSOR_GENERATION_INTEL, ...PLATFORM_GENERATION_OPTIONS]
+    }
+    if (editProcessorBrand === 'AMD') {
+      return [...PROCESSOR_GENERATION_AMD, ...PLATFORM_GENERATION_OPTIONS]
+    }
+    if (editProcessorBrand === 'Apple') {
+      return [...PROCESSOR_GENERATION_APPLE, ...PLATFORM_GENERATION_OPTIONS]
+    }
+    return PROCESSOR_GENERATION_OPTIONS
+  }, [editProcessorBrand])
+
+  const handleProcessorChange = useCallback(
+    (name: string) => {
+      setEditProcessor(name)
+      const row = processorCatalog.find((p) => p.name === name)
+      if (row?.family) setEditProcessorFamily(row.family)
+      else {
+        const fam = inferProcessorFamily(name, editProcessorBrand)
+        if (fam) setEditProcessorFamily(fam)
+      }
+      if (row?.generation) {
+        setEditProcessorGeneration(row.generation)
+        return
+      }
+      const inferred = inferProcessorGeneration(name, editProcessorBrand)
+      if (inferred) setEditProcessorGeneration(inferred)
+    },
+    [processorCatalog, editProcessorBrand]
+  )
+
+  useEffect(() => {
+    if (!editingReception) {
+      setProcessorCatalog([])
+      return
+    }
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await fetch('/api/maestros?tipo=procesador')
+        const data = (await res.json()) as {
+          items?: {
+            id: string
+            name: string
+            brand?: string | null
+            generation?: string | null
+            model?: string | null
+          }[]
+        }
+        if (!cancelled && data.items) {
+          setProcessorCatalog(
+            data.items.map((i) => ({
+              id: i.id,
+              name: i.name,
+              brand: i.brand ?? null,
+              generation: i.generation ?? null,
+              family: i.model ?? null,
+            }))
+          )
+        }
+      } catch {
+        if (!cancelled) setProcessorCatalog([])
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [editingReception])
 
   const [selectedAsset, setSelectedAsset] = useState<WarehouseAssetRow | null>(null)
   const [isRemovingAsset, setIsRemovingAsset] = useState<string | null>(null)
@@ -435,6 +820,7 @@ export default function WarehouseAssetTable({ sections, unified = false }: Wareh
   const [savingSelectedSalesPrice, setSavingSelectedSalesPrice] = useState(false)
   const [sendingToRepair, setSendingToRepair] = useState(false)
   const [exportingSelectedExcel, setExportingSelectedExcel] = useState(false)
+  const [exportingSectionKey, setExportingSectionKey] = useState<string | null>(null)
 
   // Selection & Modals
   const [selectedAssetIds, setSelectedAssetIds] = useState<Set<string>>(new Set())
@@ -556,6 +942,79 @@ export default function WarehouseAssetTable({ sections, unified = false }: Wareh
     }
   }, [selectedSalesPrice, selectedAssetIds, closeSelectedSalesPriceEditor, toast])
 
+  const exportSectionExcel = useCallback(
+    async (sectionKey: string, sectionCode: string | null, assets: WarehouseAssetRow[]) => {
+      if (assets.length === 0) {
+        toast.warning('Sin datos', 'No hay equipos para exportar en esta vista')
+        return
+      }
+      setExportingSectionKey(sectionKey)
+      try {
+        const XLSX = await import('xlsx')
+        const rows = assets.map((asset) => {
+          const hw = asset.hardwareSpecs || {}
+          const fc = displayFcClassifications(asset)
+          const inCls = asset.inputClassifications || {}
+          return {
+            Bodega: asset.warehouse_code || sectionCode || '',
+            'Serie / IMEI': asset.serial_number || '',
+            'Project #': getAssetProjectNumber(asset) || '',
+            Marca: asset.manufacturer || '',
+            Modelo: asset.model || '',
+            Condición: formatConditionLabel(asset.condition_grade) || '',
+            Tipo: asset.asset_type || '',
+            Color: asset.color || '',
+            'F (funcional)': fc.f || '',
+            'C (cosmética)': fc.c || '',
+            R2: inCls.r2Applicability || '',
+            Sanitización: inCls.dataSanitization || '',
+            'CPU marca': hw.processor_brand || '',
+            'CPU familia': hw.processor_family || '',
+            'CPU generación': hw.processor_generation || '',
+            Procesador: hw.processor || '',
+            'RAM capacidad': hw.ram_capacity || '',
+            'RAM tipo': hw.ram_type || '',
+            'Disco capacidad': hw.disk_capacity || '',
+            'Disco tipo': hw.disk_type || '',
+            Pantalla: hw.screen_size || '',
+            Teclado: hw.keyboard_type || '',
+            'Teclado versión': hw.keyboard_version || '',
+            Notas: asset.receptionNotes || '',
+            Ubicación: asset.batch_location || '',
+            'Costo (Q)': asset.cost_amount != null ? Number(asset.cost_amount).toFixed(2) : '',
+            'P. base (Q)': asset.sales_price != null ? Number(asset.sales_price).toFixed(2) : '',
+            Lote: asset.order_code || asset.batch_code || '',
+            Ticket: asset.ticket_code || '',
+            Recibido: asset.formattedReceivedDate || '',
+            Traslado: asset.formattedTransferDate || '',
+            Borrado:
+              asset.wipe_status === 'success' || asset.status === 'wiped'
+                ? 'Sí'
+                : asset.wipe_status || '',
+          }
+        })
+        const worksheet = XLSX.utils.json_to_sheet(rows)
+        const workbook = XLSX.utils.book_new()
+        XLSX.utils.book_append_sheet(workbook, worksheet, 'Inventario')
+        const stamp = new Date().toISOString().slice(0, 10)
+        const slug =
+          sectionCode && sectionCode !== 'TODAS'
+            ? sectionCode.toLowerCase()
+            : 'inventario-general'
+        XLSX.writeFile(workbook, `export-${slug}-${stamp}.xlsx`)
+        toast.success(
+          'Exportado',
+          `${assets.length} equipo${assets.length === 1 ? '' : 's'} en Excel`
+        )
+      } catch (error) {
+        toast.error('Error', error instanceof Error ? error.message : 'No se pudo exportar')
+      } finally {
+        setExportingSectionKey(null)
+      }
+    },
+    [toast]
+  )
+
   const downloadSelectedExcel = useCallback(
     async (
       assets: WarehouseAssetRow[],
@@ -649,6 +1108,33 @@ export default function WarehouseAssetTable({ sections, unified = false }: Wareh
     setEditColor(asset.color || '')
     setEditR2Applicability(asset.inputClassifications?.r2Applicability || '')
     setEditDataSanitization(asset.inputClassifications?.dataSanitization || '')
+    const fc = displayFcClassifications(asset)
+    setEditClassificationF(fc.f || asset.inputClassifications?.f || '')
+    setEditClassificationC(fc.c || asset.inputClassifications?.c || '')
+    setEditAssetType(asset.asset_type || '')
+    const hw = asset.hardwareSpecs || {}
+    const proc = hw.processor || ''
+    setEditProcessor(proc)
+    const brand = hw.processor_brand || inferProcessorBrand(proc) || ''
+    setEditProcessorBrand(brand)
+    setEditProcessorFamily(
+      hw.processor_family || inferProcessorFamily(proc, brand) || ''
+    )
+    setEditProcessorGeneration(
+      hw.processor_generation ||
+        inferProcessorGeneration(proc, brand) ||
+        inferProcessorGeneration(asset.model || '', brand) ||
+        ''
+    )
+    setNewProcessorDraft('')
+    setEditRamCapacity(hw.ram_capacity || '')
+    setEditRamType(hw.ram_type || '')
+    setEditDiskCapacity(hw.disk_capacity || '')
+    setEditDiskType(hw.disk_type || '')
+    setEditScreenSize(hw.screen_size || '')
+    setEditKeyboardType(hw.keyboard_type || '')
+    setEditKeyboardVersion(hw.keyboard_version || '')
+    setEditReceptionNotes(asset.receptionNotes || '')
   }, [])
 
   const closeReceptionEditor = useCallback(() => {
@@ -656,7 +1142,81 @@ export default function WarehouseAssetTable({ sections, unified = false }: Wareh
     setEditColor('')
     setEditR2Applicability('')
     setEditDataSanitization('')
+    setEditClassificationF('')
+    setEditClassificationC('')
+    setEditAssetType('')
+    setEditProcessorBrand('')
+    setEditProcessorFamily('')
+    setEditProcessorGeneration('')
+    setEditProcessor('')
+    setNewProcessorDraft('')
+    setProcessorCatalog([])
+    setEditRamCapacity('')
+    setEditRamType('')
+    setEditDiskCapacity('')
+    setEditDiskType('')
+    setEditScreenSize('')
+    setEditKeyboardType('')
+    setEditKeyboardVersion('')
+    setEditReceptionNotes('')
   }, [])
+
+  const addProcessorToCatalog = useCallback(async () => {
+    const name = newProcessorDraft.trim()
+    if (!name) {
+      toast.error('Procesador', 'Escriba el nombre del CPU para agregarlo al catálogo')
+      return
+    }
+    if (!editProcessorBrand) {
+      toast.error('Marca CPU', 'Seleccione Intel o AMD antes de agregar al catálogo')
+      return
+    }
+    setAddingProcessor(true)
+    try {
+      const response = await fetch('/api/maestros/item', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          tipo: 'procesador',
+          name,
+          brand: editProcessorBrand,
+          generation: editProcessorGeneration || null,
+          family: editProcessorFamily || null,
+        }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        throw new Error(payload.error || 'No se pudo agregar el procesador')
+      }
+      const item = payload.item as {
+        id: string
+        name: string
+        brand?: string | null
+        generation?: string | null
+        model?: string | null
+      }
+      setProcessorCatalog((prev) => {
+        if (prev.some((p) => p.name.toLowerCase() === item.name.toLowerCase())) return prev
+        return [
+          ...prev,
+          {
+            id: item.id,
+            name: item.name,
+            brand: item.brand ?? editProcessorBrand,
+            generation: item.generation ?? (editProcessorGeneration || null),
+            family: item.model ?? (editProcessorFamily || null),
+          },
+        ]
+      })
+      setEditProcessor(item.name)
+      setNewProcessorDraft('')
+      toast.success('Catálogo', `Procesador "${item.name}" guardado (${editProcessorBrand})`)
+    } catch (error) {
+      toast.error('Error', error instanceof Error ? error.message : 'Error al agregar procesador')
+    } finally {
+      setAddingProcessor(false)
+    }
+  }, [newProcessorDraft, editProcessorBrand, editProcessorFamily, editProcessorGeneration, toast])
 
   const saveReceptionFields = useCallback(async () => {
     if (!editingReception) return
@@ -670,13 +1230,30 @@ export default function WarehouseAssetTable({ sections, unified = false }: Wareh
           color: editColor || null,
           r2Applicability: editR2Applicability || null,
           dataSanitization: editDataSanitization || null,
+          classificationF: editClassificationF || null,
+          classificationC: editClassificationC || null,
+          assetType: editAssetType || null,
+          receptionNotes: editReceptionNotes || null,
+          hardwareSpecs: {
+            processor: editProcessor || null,
+            processor_brand: editProcessorBrand || null,
+            processor_generation: editProcessorGeneration || null,
+            processor_family: editProcessorFamily || null,
+            ram_capacity: editRamCapacity || null,
+            ram_type: editRamType || null,
+            disk_capacity: editDiskCapacity || null,
+            disk_type: editDiskType || null,
+            screen_size: editScreenSize || null,
+            keyboard_type: editKeyboardType || null,
+            keyboard_version: editKeyboardVersion || null,
+          },
         }),
       })
       const payload = await response.json().catch(() => ({}))
       if (!response.ok) {
         throw new Error(payload.error || 'No se pudo guardar')
       }
-      toast.success('Guardado', 'Color, R2 y sanitización actualizados')
+      toast.success('Guardado', 'Color, clasificación F/C, R2 y sanitización actualizados')
       closeReceptionEditor()
       window.location.reload()
     } catch (error) {
@@ -684,7 +1261,29 @@ export default function WarehouseAssetTable({ sections, unified = false }: Wareh
     } finally {
       setSavingReception(false)
     }
-  }, [editingReception, editColor, editR2Applicability, editDataSanitization, toast, closeReceptionEditor])
+  }, [
+    editingReception,
+    editColor,
+    editR2Applicability,
+    editDataSanitization,
+    editClassificationF,
+    editClassificationC,
+    editAssetType,
+    editProcessorBrand,
+    editProcessorFamily,
+    editProcessorGeneration,
+    editProcessor,
+    editRamCapacity,
+    editRamType,
+    editDiskCapacity,
+    editDiskType,
+    editScreenSize,
+    editKeyboardType,
+    editKeyboardVersion,
+    editReceptionNotes,
+    toast,
+    closeReceptionEditor,
+  ])
 
   const openAssetDetails = useCallback(async (asset: WarehouseAssetRow, opts?: { editReception?: boolean }) => {
     if (!asset.serial_number) return
@@ -1064,6 +1663,17 @@ export default function WarehouseAssetTable({ sections, unified = false }: Wareh
 
               <button
                 type="button"
+                onClick={() => void exportSectionExcel(section.key, section.code, filteredAssets)}
+                disabled={exportingSectionKey === section.key}
+                className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-sky-300/40 bg-sky-500/20 text-white text-xs font-semibold hover:bg-sky-500/30 disabled:opacity-50"
+                title="Descargar Excel de la vista actual (respeta filtros de columna)"
+              >
+                <Download className="w-4 h-4" />
+                {exportingSectionKey === section.key ? 'Exportando…' : 'Exportar'}
+              </button>
+
+              <button
+                type="button"
                 onClick={() => setPurchasePasteOpen(true)}
                 className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-emerald-300/40 bg-emerald-500/20 text-white text-xs font-semibold hover:bg-emerald-500/30"
                 title="Pegar serie + costo de compra desde Excel"
@@ -1230,7 +1840,7 @@ export default function WarehouseAssetTable({ sections, unified = false }: Wareh
                   {showQcColumn && visibleColumns.qc_out && (
                     <th className="text-center px-1.5 py-1.5 text-emerald-700 dark:text-emerald-400">
                       <ExcelColumnFilter
-                        label="QC"
+                        label="F / C"
                         align="center"
                         options={collectColumnOptions(section.assets, 'qc_out')}
                         selected={columnFilters.qc_out ?? null}
@@ -1422,9 +2032,16 @@ export default function WarehouseAssetTable({ sections, unified = false }: Wareh
                       {asset.serial_number ? (
                         <button
                           type="button"
-                          onClick={() => openAssetDetails(asset, { editReception: (asset.warehouse_code || section.code) === 'BOD-REC' })}
+                          onClick={() => {
+                            const wh = asset.warehouse_code || section.code
+                            if (opensEquipmentEditorOnSerial(wh, section.code)) {
+                              openReceptionEditor(asset)
+                            } else {
+                              void openAssetDetails(asset)
+                            }
+                          }}
                           className="font-mono text-indigo-600 dark:text-indigo-400 text-[10px] font-black tracking-tight hover:underline whitespace-nowrap"
-                          title={asset.serial_number}
+                          title="Editar detalle del equipo"
                         >
                           {asset.serial_number}
                         </button>
@@ -1530,21 +2147,37 @@ export default function WarehouseAssetTable({ sections, unified = false }: Wareh
                     )}
                     {showQcColumn && visibleColumns.qc_out && (
                       <td className="px-1.5 py-1 text-center">
-                        <div className="inline-flex items-center gap-0.5 font-black whitespace-nowrap">
-                          {asset.outputClassifications?.f ? (
-                            <span className="rounded border border-purple-200 dark:border-purple-700 bg-purple-100 dark:bg-purple-900/30 px-1.5 py-0.5 text-[9px] font-black uppercase text-purple-900 dark:text-purple-400">
-                              {asset.outputClassifications.f}
-                            </span>
-                          ) : null}
-                          {asset.outputClassifications?.c ? (
-                            <span className="rounded border border-amber-200 dark:border-amber-700 bg-amber-100 dark:bg-amber-900/30 px-1.5 py-0.5 text-[9px] font-black uppercase text-amber-900 dark:text-amber-300">
-                              {asset.outputClassifications.c}
-                            </span>
-                          ) : null}
-                          {!asset.outputClassifications?.f && !asset.outputClassifications?.c && (
-                            <span className="text-gray-400 text-[9px] font-black uppercase opacity-30">-</span>
-                          )}
-                        </div>
+                        <button
+                          type="button"
+                          onClick={() => openReceptionEditor(asset)}
+                          className="inline-flex items-center justify-center gap-0.5 font-black whitespace-nowrap"
+                          title="Cargar / editar clasificación F y C"
+                        >
+                          {(() => {
+                            const { f, c } = displayFcClassifications(asset)
+                            if (!f && !c) {
+                              return (
+                                <span className="text-purple-500 text-[9px] font-black uppercase hover:underline">
+                                  Cargar
+                                </span>
+                              )
+                            }
+                            return (
+                              <>
+                                {f ? (
+                                  <span className="rounded border border-purple-200 dark:border-purple-700 bg-purple-100 dark:bg-purple-900/30 px-1.5 py-0.5 text-[9px] font-black uppercase text-purple-900 dark:text-purple-400">
+                                    {f}
+                                  </span>
+                                ) : null}
+                                {c ? (
+                                  <span className="rounded border border-amber-200 dark:border-amber-700 bg-amber-100 dark:bg-amber-900/30 px-1.5 py-0.5 text-[9px] font-black uppercase text-amber-900 dark:text-amber-300">
+                                    {c}
+                                  </span>
+                                ) : null}
+                              </>
+                            )
+                          })()}
+                        </button>
                       </td>
                     )}
                     {visibleColumns.rec_in && (
@@ -1578,11 +2211,30 @@ export default function WarehouseAssetTable({ sections, unified = false }: Wareh
                     )}
                     {visibleColumns.specs && (
                       <td className="px-1.5 py-1 max-w-[120px]">
-                        <div className="flex items-center gap-1 text-[9px] font-bold whitespace-nowrap overflow-hidden">
+                        <button
+                          type="button"
+                          onClick={() => openReceptionEditor(asset)}
+                          className="w-full text-left flex items-center gap-1 text-[9px] font-bold whitespace-nowrap overflow-hidden hover:opacity-90"
+                          title="Editar especificaciones"
+                        >
                           {asset.hardwareSpecs.processor && (
                             <div className="flex items-center gap-1">
                               <span className="text-gray-400 dark:text-gray-500 uppercase tracking-wide font-black shrink-0">CPU:</span>
-                              <span className="text-cyan-700 dark:text-cyan-400 font-black truncate" title={asset.hardwareSpecs.processor}>{asset.hardwareSpecs.processor}</span>
+                              <span
+                                className="text-cyan-700 dark:text-cyan-400 font-black truncate"
+                                title={asset.hardwareSpecs.processor}
+                              >
+                                {asset.hardwareSpecs.processor_brand
+                                  ? `${asset.hardwareSpecs.processor_brand} · `
+                                  : ''}
+                                {asset.hardwareSpecs.processor_family
+                                  ? `${asset.hardwareSpecs.processor_family} · `
+                                  : ''}
+                                {asset.hardwareSpecs.processor}
+                                {asset.hardwareSpecs.processor_generation
+                                  ? ` (${asset.hardwareSpecs.processor_generation})`
+                                  : ''}
+                              </span>
                             </div>
                           )}
                           {(asset.hardwareSpecs.ram_capacity || asset.hardwareSpecs.ram_type) && (
@@ -1593,8 +2245,20 @@ export default function WarehouseAssetTable({ sections, unified = false }: Wareh
                           )}
                           {(asset.hardwareSpecs.disk_capacity || asset.hardwareSpecs.disk_type) && (
                             <div className="flex items-center gap-1">
-                              <span className="text-gray-400 dark:text-gray-500 uppercase tracking-wide font-black shrink-0">SSD:</span>
+                              <span className="text-gray-400 dark:text-gray-500 uppercase tracking-wide font-black shrink-0">Disco:</span>
                               <span className="text-purple-700 dark:text-purple-400 font-black truncate">{asset.hardwareSpecs.disk_capacity || '-'}{asset.hardwareSpecs.disk_type ? ` (${asset.hardwareSpecs.disk_type})` : ''}</span>
+                            </div>
+                          )}
+                          {(asset.hardwareSpecs.screen_size ||
+                            asset.hardwareSpecs.keyboard_type ||
+                            asset.hardwareSpecs.keyboard_version) && (
+                            <div className="flex items-center gap-1">
+                              <span className="text-gray-400 dark:text-gray-500 uppercase tracking-wide font-black shrink-0">UI:</span>
+                              <span className="text-slate-600 dark:text-slate-300 font-black truncate">
+                                {[asset.hardwareSpecs.screen_size, asset.hardwareSpecs.keyboard_type, asset.hardwareSpecs.keyboard_version]
+                                  .filter(Boolean)
+                                  .join(' · ')}
+                              </span>
                             </div>
                           )}
                           {asset.receptionNotes && (
@@ -1604,10 +2268,17 @@ export default function WarehouseAssetTable({ sections, unified = false }: Wareh
                               </span>
                             </div>
                           )}
-                          {!asset.hardwareSpecs.processor && !asset.hardwareSpecs.ram_capacity && !asset.hardwareSpecs.disk_capacity && !asset.receptionNotes && (
-                            <span className="text-gray-300 dark:text-gray-600 font-black uppercase tracking-widest">-</span>
+                          {!asset.hardwareSpecs.processor &&
+                            !asset.hardwareSpecs.ram_capacity &&
+                            !asset.hardwareSpecs.disk_capacity &&
+                            !asset.hardwareSpecs.screen_size &&
+                            !asset.hardwareSpecs.keyboard_type &&
+                            !asset.receptionNotes && (
+                            <span className="text-purple-500 font-black uppercase tracking-widest hover:underline">
+                              Cargar
+                            </span>
                           )}
-                        </div>
+                        </button>
                       </td>
                     )}
                     {visibleColumns.location && (
@@ -2007,12 +2678,14 @@ export default function WarehouseAssetTable({ sections, unified = false }: Wareh
       {/* Edit Location Modal */}
       {
         editingReception && (
-          <div className="fixed inset-0 z-[60] flex items-center justify-center px-4">
+          <div className="fixed inset-0 z-[60] flex items-center justify-center px-4 py-6">
             <div className="absolute inset-0 bg-black/80" onClick={closeReceptionEditor} />
-            <div className="relative z-10 w-full max-w-md rounded-2xl border border-gray-700 bg-[#0f1419] p-6 space-y-4 shadow-2xl">
+            <div className="relative z-10 w-full max-w-lg max-h-[90vh] overflow-y-auto rounded-2xl border border-gray-700 bg-[#0f1419] p-6 space-y-4 shadow-2xl">
               <div className="flex items-start justify-between gap-3">
                 <div>
-                  <h3 className="text-lg font-black text-white uppercase tracking-tight">Datos de recepción</h3>
+                  <h3 className="text-lg font-black text-white uppercase tracking-tight">
+                    Características del equipo
+                  </h3>
                   <p className="text-xs text-surface-400 font-mono mt-1">
                     {editingReception.serial_number} · {editingReception.manufacturer} {editingReception.model}
                   </p>
@@ -2020,6 +2693,50 @@ export default function WarehouseAssetTable({ sections, unified = false }: Wareh
                 <button type="button" onClick={closeReceptionEditor} className="p-2 text-surface-400 hover:text-white">
                   <X className="w-4 h-4" />
                 </button>
+              </div>
+
+              <div className="space-y-2">
+                <FormLabel>Tipo de producto</FormLabel>
+                {selectWithCustomOptions(
+                  editAssetType,
+                  PRODUCT_TYPE_OPTIONS,
+                  'Laptop / Desktop / Servidor…',
+                  setEditAssetType,
+                  'w-full bg-[#1a2030] border border-gray-600 rounded-lg px-3 py-2.5 text-white text-sm font-bold uppercase tracking-wide'
+                )}
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-2">
+                  <FormLabel>Clasificación F (funcional)</FormLabel>
+                  <select
+                    value={editClassificationF}
+                    onChange={(e) => setEditClassificationF(e.target.value)}
+                    className="w-full bg-[#1a2030] border border-gray-600 rounded-lg px-3 py-2.5 text-white text-sm font-bold"
+                  >
+                    <option value="">Seleccionar...</option>
+                    {CLASSIFICATION_F_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-2">
+                  <FormLabel>Clasificación C (cosmética)</FormLabel>
+                  <select
+                    value={editClassificationC}
+                    onChange={(e) => setEditClassificationC(e.target.value)}
+                    className="w-full bg-[#1a2030] border border-gray-600 rounded-lg px-3 py-2.5 text-white text-sm font-bold"
+                  >
+                    <option value="">Seleccionar...</option>
+                    {CLASSIFICATION_C_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
               </div>
 
               <div className="space-y-2">
@@ -2062,6 +2779,169 @@ export default function WarehouseAssetTable({ sections, unified = false }: Wareh
                     <option key={opt.value} value={opt.value}>{opt.label}</option>
                   ))}
                 </select>
+              </div>
+
+              <div className="border-t border-gray-800 pt-3 space-y-3">
+                <p className="text-[10px] font-black uppercase tracking-widest text-cyan-400">
+                  Especificaciones técnicas
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div className="space-y-2">
+                    <FormLabel>Marca CPU</FormLabel>
+                    <select
+                      value={editProcessorBrand}
+                      onChange={(e) => setEditProcessorBrand(e.target.value)}
+                      className="w-full bg-[#1a2030] border border-gray-600 rounded-lg px-3 py-2.5 text-white text-sm font-bold"
+                    >
+                      <option value="">Intel / AMD…</option>
+                      {PROCESSOR_BRAND_OPTIONS.map((b) => (
+                        <option key={b} value={b}>
+                          {b}
+                        </option>
+                      ))}
+                      {editProcessorBrand &&
+                      !PROCESSOR_BRAND_OPTIONS.includes(editProcessorBrand) ? (
+                        <option value={editProcessorBrand}>{editProcessorBrand}</option>
+                      ) : null}
+                    </select>
+                  </div>
+                  <div className="space-y-2">
+                    <FormLabel>Familia CPU</FormLabel>
+                    {selectWithCustomOptions(
+                      editProcessorFamily,
+                      processorFamilyOptions,
+                      'Core i7, Ryzen 5…',
+                      setEditProcessorFamily,
+                      'w-full bg-[#1a2030] border border-gray-600 rounded-lg px-3 py-2.5 text-white text-sm font-semibold'
+                    )}
+                  </div>
+                  <div className="space-y-2">
+                    <FormLabel>Generación</FormLabel>
+                    {selectWithCustomOptions(
+                      editProcessorGeneration,
+                      processorGenerationOptions,
+                      '11ª Gen, Ryzen 5000…',
+                      setEditProcessorGeneration,
+                      'w-full bg-[#1a2030] border border-gray-600 rounded-lg px-3 py-2.5 text-white text-sm font-semibold'
+                    )}
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <FormLabel>Procesador (CPU)</FormLabel>
+                  {selectWithCustomOptions(
+                    editProcessor,
+                    processorNameOptions,
+                    'Seleccionar del catálogo…',
+                    handleProcessorChange,
+                    'w-full bg-[#1a2030] border border-gray-600 rounded-lg px-3 py-2.5 text-white text-sm font-semibold'
+                  )}
+                </div>
+                <div className="flex gap-2 items-end">
+                  <div className="flex-1 space-y-2">
+                    <FormLabel className="sr-only">Nuevo procesador</FormLabel>
+                    <input
+                      value={newProcessorDraft}
+                      onChange={(e) => setNewProcessorDraft(e.target.value)}
+                      placeholder="Nuevo CPU para guardar en lista…"
+                      className="w-full bg-[#1a2030] border border-gray-600 rounded-lg px-3 py-2.5 text-white text-sm font-semibold"
+                    />
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void addProcessorToCatalog()}
+                    disabled={addingProcessor || !newProcessorDraft.trim()}
+                    className="shrink-0 inline-flex items-center gap-1.5 rounded-lg border border-cyan-500/50 bg-cyan-500/10 px-3 py-2.5 text-[11px] font-black uppercase tracking-wide text-cyan-300 hover:bg-cyan-500/20 disabled:opacity-40"
+                  >
+                    <Plus className="w-3.5 h-3.5" />
+                    Agregar
+                  </button>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-2">
+                    <FormLabel>Capacidad RAM</FormLabel>
+                    {selectWithCustomOptions(
+                      editRamCapacity,
+                      RAM_CAPACITY_OPTIONS,
+                      'Seleccionar…',
+                      setEditRamCapacity,
+                      'w-full bg-[#1a2030] border border-gray-600 rounded-lg px-3 py-2.5 text-white text-sm font-semibold'
+                    )}
+                  </div>
+                  <div className="space-y-2">
+                    <FormLabel>Tipo RAM</FormLabel>
+                    {selectWithCustomOptions(
+                      editRamType,
+                      RAM_TYPE_OPTIONS,
+                      'DDR4 / DDR5…',
+                      setEditRamType,
+                      'w-full bg-[#1a2030] border border-gray-600 rounded-lg px-3 py-2.5 text-white text-sm font-semibold'
+                    )}
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-2">
+                    <FormLabel>Capacidad disco</FormLabel>
+                    {selectWithCustomOptions(
+                      editDiskCapacity,
+                      DISK_CAPACITY_OPTIONS,
+                      'Seleccionar…',
+                      setEditDiskCapacity,
+                      'w-full bg-[#1a2030] border border-gray-600 rounded-lg px-3 py-2.5 text-white text-sm font-semibold'
+                    )}
+                  </div>
+                  <div className="space-y-2">
+                    <FormLabel>Tipo disco</FormLabel>
+                    {selectWithCustomOptions(
+                      editDiskType,
+                      DISK_TYPE_OPTIONS,
+                      'HDD / SSD / NVMe…',
+                      setEditDiskType,
+                      'w-full bg-[#1a2030] border border-gray-600 rounded-lg px-3 py-2.5 text-white text-sm font-semibold'
+                    )}
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-2">
+                    <FormLabel>Tamaño pantalla</FormLabel>
+                    {selectWithCustomOptions(
+                      editScreenSize,
+                      SCREEN_SIZE_OPTIONS,
+                      'Seleccionar…',
+                      setEditScreenSize,
+                      'w-full bg-[#1a2030] border border-gray-600 rounded-lg px-3 py-2.5 text-white text-sm font-semibold'
+                    )}
+                  </div>
+                  <div className="space-y-2">
+                    <FormLabel>Tipo teclado</FormLabel>
+                    {selectWithCustomOptions(
+                      editKeyboardType,
+                      KEYBOARD_TYPE_OPTIONS,
+                      'US / ES / LATAM…',
+                      setEditKeyboardType,
+                      'w-full bg-[#1a2030] border border-gray-600 rounded-lg px-3 py-2.5 text-white text-sm font-semibold'
+                    )}
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <FormLabel>Teclado (versión)</FormLabel>
+                  {selectWithCustomOptions(
+                    editKeyboardVersion,
+                    KEYBOARD_VERSION_OPTIONS,
+                    'Normal / Retroiluminado…',
+                    setEditKeyboardVersion,
+                    'w-full bg-[#1a2030] border border-gray-600 rounded-lg px-3 py-2.5 text-white text-sm font-semibold'
+                  )}
+                </div>
+                <div className="space-y-2">
+                  <FormLabel>Notas / configuración</FormLabel>
+                  <textarea
+                    value={editReceptionNotes}
+                    onChange={(e) => setEditReceptionNotes(e.target.value)}
+                    rows={3}
+                    placeholder="Texto libre o configuration del Excel"
+                    className="w-full bg-[#1a2030] border border-gray-600 rounded-lg px-3 py-2.5 text-white text-xs font-mono"
+                  />
+                </div>
               </div>
 
               <div className="flex gap-2 pt-2">

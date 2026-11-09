@@ -14,7 +14,6 @@ import ExcelExportButton from './components/ExcelExportButton'
 import RemarketingTabs, { type RemarketingTab } from './components/RemarketingTabs'
 import RepairStageTabs from './components/RepairStageTabs'
 import RepairStageBoard from './components/RepairStageBoard'
-import PurchaseLotForm from './components/PurchaseLotForm'
 import ProjectCostSummary, { type ProjectCostRow } from './components/ProjectCostSummary'
 
 type WarehouseFilterParams = {
@@ -35,12 +34,16 @@ type WorkshopClassifications = {
 }
 type HardwareSpecs = {
   processor?: string
+  processor_brand?: string
+  processor_generation?: string
+  processor_family?: string
   ram_capacity?: string
   ram_type?: string
   disk_capacity?: string
   disk_type?: string
   keyboard_type?: string
   keyboard_version?: string
+  screen_size?: string
   bios_version?: string
 }
 
@@ -120,12 +123,16 @@ function getHardwareSpecs(asset: WarehouseAsset): HardwareSpecs {
   const hw = specs.hardware_specs as any
   return {
     processor: hw.processor,
+    processor_brand: hw.processor_brand,
+    processor_generation: hw.processor_generation,
+    processor_family: hw.processor_family,
     ram_capacity: hw.ram_capacity,
     ram_type: hw.ram_type,
     disk_capacity: hw.disk_capacity,
     disk_type: hw.disk_type,
     keyboard_type: hw.keyboard_type,
     keyboard_version: hw.keyboard_version,
+    screen_size: hw.screen_size,
     bios_version: hw.bios_version
   }
 }
@@ -420,7 +427,6 @@ export default async function BodegaPage({
             processedCount={remProcessedCount}
             search={searchTerm}
           />
-          {remTab === 'comprados' && <PurchaseLotForm />}
           {projectCostRows.length > 0 && (
             <ProjectCostSummary
               rows={projectCostRows}

@@ -105,6 +105,8 @@ export interface CrmEntity {
   commercial_name: string
   legal_name: string | null
   entity_type: CrmEntityType
+  account_class?: 'empresa' | 'cliente_final' | null
+  parent_entity_id?: string | null
   email: string | null
   phone: string | null
   address: string | null

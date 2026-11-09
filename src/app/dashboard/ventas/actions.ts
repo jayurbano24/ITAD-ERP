@@ -100,6 +100,7 @@ const isConsumidorFinalNit = (nit: string) => {
 /** Alta rápida de cliente desde POS (NIT opcional → CF; CF puede repetirse) */
 export async function createCustomerQuick(input: {
   commercial_name: string
+  legal_name?: string | null
   tax_id_nit?: string
   phone?: string | null
   email?: string | null
@@ -140,10 +141,13 @@ export async function createCustomerQuick(input: {
     }
   }
 
+  const legal_name = input.legal_name?.trim() || null
+
   const { data, error } = await supabase
     .from('crm_entities')
     .insert({
       commercial_name,
+      legal_name,
       tax_id_nit: isConsumidorFinalNit(tax_id_nit) ? 'CF' : tax_id_nit,
       entity_type: 'client',
       phone: input.phone?.trim() || null,

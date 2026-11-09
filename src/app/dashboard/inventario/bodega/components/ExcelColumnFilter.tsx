@@ -14,6 +14,8 @@ type ExcelColumnFilterProps = {
   sortDir?: 'asc' | 'desc' | null
   onSort?: (dir: 'asc' | 'desc') => void
   className?: string
+  labelClassName?: string
+  inactiveFilterClassName?: string
   align?: 'left' | 'center'
 }
 
@@ -25,6 +27,8 @@ export default function ExcelColumnFilter({
   sortDir = null,
   onSort,
   className,
+  labelClassName,
+  inactiveFilterClassName,
   align = 'left',
 }: ExcelColumnFilterProps) {
   const [open, setOpen] = useState(false)
@@ -89,7 +93,11 @@ export default function ExcelColumnFilter({
         className
       )}
     >
-      <span className="truncate leading-none">{label}</span>
+      <span
+        className={cn('truncate leading-none', labelClassName ?? 'text-inherit')}
+      >
+        {label}
+      </span>
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
@@ -97,7 +105,8 @@ export default function ExcelColumnFilter({
           'inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded border transition-colors',
           isActive || sortDir
             ? 'border-indigo-400 bg-indigo-500/20 text-indigo-300'
-            : 'border-transparent text-gray-400 hover:border-gray-500 hover:text-white'
+            : inactiveFilterClassName ??
+                'border-transparent text-gray-400 hover:border-gray-500 hover:text-white'
         )}
         title={`Filtrar / ordenar ${label}`}
         aria-label={`Filtrar / ordenar ${label}`}

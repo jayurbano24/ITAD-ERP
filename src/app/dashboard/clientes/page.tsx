@@ -38,7 +38,7 @@ export default async function ClientesPage() {
         }
       />
 
-      <main className="p-8 max-w-[1600px] mx-auto">
+      <main className="px-4 py-4 sm:px-6 max-w-[1320px] mx-auto">
         {error ? (
           <div className="p-8 bg-rose-50 dark:bg-rose-900/10 border border-rose-200 dark:border-rose-900/20 rounded-[2rem] text-rose-600 dark:text-rose-400 shadow-sm">
             <p className="font-bold">Error al cargar clientes</p>

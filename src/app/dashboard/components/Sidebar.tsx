@@ -99,6 +99,7 @@ export const menuItems: MenuItem[] = [
     submenu: [
       { label: 'Historial / Facturas', href: '/dashboard/ventas', icon: FileText },
       { label: 'Nueva Venta', href: '/dashboard/ventas/nuevo', icon: Plus },
+      { label: 'Cotizaciones', href: '/dashboard/ventas/cotizaciones', icon: ClipboardList },
     ]
   },
   {

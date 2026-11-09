@@ -159,8 +159,7 @@ type DiagnosisAction = {
 const diagnosisActions: DiagnosisAction[] = [
   { label: 'Diagnóstico', key: 'diagnostico' },
   { label: 'Hardvesting', key: 'hardvesting', warehouseLabel: 'Bodega Hardvesting' },
-  { label: 'Borrado', key: 'borrado', apiKey: 'data_wipe', warehouseLabel: 'Borrado de Datos' },
-  { label: 'Destrucción', key: 'destruccion', warehouseLabel: 'Bodega de Destrucción' }
+  { label: 'Destrucción', key: 'destruccion', warehouseLabel: 'Bodega de Destrucción' },
 ]
 
 const repairModes = ['Partes', 'Software', 'Cambio', 'No Reparado', 'Nota de Crédito']

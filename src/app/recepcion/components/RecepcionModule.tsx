@@ -1,9 +1,13 @@
 'use client'
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { Package, Plus, X, PackageCheck, Loader2, Trash2, ScanBarcode } from 'lucide-react'
+import { ArrowLeft, Package, Plus, X, PackageCheck, Loader2, Trash2, ScanBarcode } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Text } from '@/components/ui/Text'
+import ReceptionQuickCreateTicket from './ReceptionQuickCreateTicket'
+import ReceptionConduceWorkbench from './ReceptionConduceWorkbench'
+import ReceptionPitoleoPanel, { ReceptionPitoleoModalShell } from './ReceptionPitoleoPanel'
+import type { ReceptionServiceKind } from '@/lib/tickets/receptionService'
 
 type ReceptionUnit = {
   id: string
@@ -99,6 +103,7 @@ type TicketMetadata = {
   readableId: string
   client: string
   lotNumber: string
+  ticketType?: string | null
   attachmentUrl?: string | null
   pickupAddress?: string | null
   pickupDate?: string | null
@@ -162,6 +167,10 @@ const RecepcionModule = () => {
   const [ticketInfo, setTicketInfo] = useState<TicketMetadata | null>(null)
   const [availableTickets, setAvailableTickets] = useState<ReceptionTicketListItem[]>([])
   const [loadingTickets, setLoadingTickets] = useState(false)
+  const [receptionClients, setReceptionClients] = useState<
+    { id: string; commercial_name: string; tax_id_nit: string; account_class?: string | null }[]
+  >([])
+  const [loadingReceptionClients, setLoadingReceptionClients] = useState(false)
   const [loadingBoxes, setLoadingBoxes] = useState(false)
   const [boxesError, setBoxesError] = useState<string | null>(null)
   const [boxes, setBoxes] = useState<any[]>([])
@@ -172,8 +181,13 @@ const RecepcionModule = () => {
   const [serialInput, setSerialInput] = useState('')
   const [addingSerial, setAddingSerial] = useState(false)
   const [completingTicket, setCompletingTicket] = useState(false)
+  const [deletingTicketId, setDeletingTicketId] = useState<string | null>(null)
   const [serialError, setSerialError] = useState<string | null>(null)
   const serialInputRef = useRef<HTMLInputElement>(null)
+  const pitoleoPanelRef = useRef<HTMLDivElement>(null)
+  const [postVentaPitoleoOpen, setPostVentaPitoleoOpen] = useState(false)
+  const [pendingPitoleoLineKey, setPendingPitoleoLineKey] = useState<string | null>(null)
+  const [savingLineQuantityKey, setSavingLineQuantityKey] = useState<string | null>(null)
   const [receptionForm, setReceptionForm] = useState(createReceptionForm())
   const [isPersistingDetails, setIsPersistingDetails] = useState(false)
   const [catalogAccessories, setCatalogAccessories] = useState<CatalogAccessory[]>([])
@@ -190,10 +204,41 @@ const RecepcionModule = () => {
   const [diskTypeOptions, setDiskTypeOptions] = useState<string[]>([])
   const [tecladoOptions, setTecladoOptions] = useState<string[]>([])
   const [loadingCatalogs, setLoadingCatalogs] = useState(false)
+  const [receptionServiceKind, setReceptionServiceKind] = useState<ReceptionServiceKind>('itad')
 
   const activeBoxLabel = activeBoxDetails
     ? savedLabels.find((label) => label.boxId === activeBoxDetails.id)
     : null
+
+  const refreshAvailableTickets = useCallback(async () => {
+    setLoadingTickets(true)
+    try {
+      const response = await fetch('/api/recepcion/tickets')
+      if (response.ok) {
+        const data = await response.json()
+        setAvailableTickets(data.tickets || [])
+      }
+    } catch (error) {
+      console.error('Error loading reception tickets:', error)
+    } finally {
+      setLoadingTickets(false)
+    }
+  }, [])
+
+  const refreshReceptionClients = useCallback(async () => {
+    setLoadingReceptionClients(true)
+    try {
+      const response = await fetch('/api/recepcion/clients')
+      if (response.ok) {
+        const data = await response.json()
+        setReceptionClients(data.clients || [])
+      }
+    } catch (error) {
+      console.error('Error loading reception clients:', error)
+    } finally {
+      setLoadingReceptionClients(false)
+    }
+  }, [])
 
   // Load accessories catalog + tickets pendientes de recepción
   useEffect(() => {
@@ -209,23 +254,10 @@ const RecepcionModule = () => {
       }
     }
     loadAccessoriesCatalog()
+    void refreshAvailableTickets()
 
-    const loadTickets = async () => {
-      setLoadingTickets(true)
-      try {
-        const response = await fetch('/api/recepcion/tickets')
-        if (response.ok) {
-          const data = await response.json()
-          setAvailableTickets(data.tickets || [])
-        }
-      } catch (error) {
-        console.error('Error loading reception tickets:', error)
-      } finally {
-        setLoadingTickets(false)
-      }
-    }
-    void loadTickets()
-  }, [])
+    void refreshReceptionClients()
+  }, [refreshAvailableTickets, refreshReceptionClients])
 
   // Función para cargar catálogos
   const loadCatalogs = useCallback(async () => {
@@ -436,7 +468,7 @@ const RecepcionModule = () => {
   // Load boxes / equipos del ticket (incluye ítems sin caja logística)
   const loadBoxesForTicket = async (
     readableOverride?: string,
-    options?: { keepModalOpen?: boolean; preferredBoxId?: string }
+    options?: { keepModalOpen?: boolean; preferredBoxId?: string; openPitoleo?: boolean }
   ) => {
     setLoadingBoxes(true)
     setBoxesError(null)
@@ -463,6 +495,7 @@ const RecepcionModule = () => {
         readableId: payload.ticket?.readableId || normalizedTicket,
         client: payload.ticket?.client || 'Cliente desconocido',
         lotNumber: payload.ticket?.lotNumber || `Lote ${normalizedTicket}`,
+        ticketType: payload.ticket?.ticketType ?? null,
         attachmentUrl: payload.ticket?.attachmentUrl || null,
         pickupAddress: payload.ticket?.pickupAddress || null,
         pickupDate: payload.ticket?.pickupDate || null,
@@ -510,6 +543,12 @@ const RecepcionModule = () => {
         const preferredId = options.preferredBoxId || activeBoxDetails?.id
         const refreshed = normalized.find((b: any) => b.id === preferredId) || normalized[0] || null
         setActiveBoxDetails(refreshed)
+      } else if (options?.openPitoleo && normalized.length > 0) {
+        const primary =
+          normalized.find((b: any) => b.source === 'ticket') ?? normalized[0]
+        setActiveBoxDetails(primary)
+        setActiveUnitForReception(null)
+        resetReceptionForm()
       } else {
         setActiveBoxDetails(null)
         setActiveUnitForReception(null)
@@ -530,7 +569,55 @@ const RecepcionModule = () => {
   }
 
   const selectTicketFromList = (ticket: ReceptionTicketListItem) => {
-    void loadBoxesForTicket(ticket.readableId)
+    void loadBoxesForTicket(ticket.readableId, { openPitoleo: true })
+  }
+
+  const clearLoadedTicket = () => {
+    setTicketInfo(null)
+    setBoxes([])
+    setActiveBoxDetails(null)
+    setActiveUnitForReception(null)
+    setActiveProductLineKey(null)
+    resetReceptionForm()
+    setBoxesError(null)
+    setSavedLabels([])
+    setPostVentaPitoleoOpen(false)
+    setPendingPitoleoLineKey(null)
+  }
+
+  const deleteTicketByReadableId = async (readableId: string) => {
+    const label = readableId.trim()
+    if (!label) return
+    if (
+      !window.confirm(
+        `¿Eliminar permanentemente el ticket ${label}? Se borrarán ítems y datos de recepción asociados.`
+      )
+    ) {
+      return
+    }
+
+    setDeletingTicketId(label)
+    setBoxesError(null)
+    try {
+      const response = await fetch(
+        `/api/logistica/tickets/${encodeURIComponent(label)}`,
+        { method: 'DELETE' }
+      )
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        setBoxesError(payload.error || `No se pudo eliminar ${label}`)
+        return
+      }
+      if (ticketInfo?.readableId === label || ticketSearchTerm.trim() === label) {
+        setTicketSearchTerm('')
+        clearLoadedTicket()
+      }
+      await refreshAvailableTickets()
+    } catch {
+      setBoxesError(`Error de red al eliminar ${label}`)
+    } finally {
+      setDeletingTicketId(null)
+    }
   }
 
   const getBoxStats = (box: any) => {
@@ -539,32 +626,45 @@ const RecepcionModule = () => {
     return { classified, pending }
   }
 
+  const pitoleoBox = useMemo(() => {
+    if (
+      activeBoxDetails &&
+      (activeBoxDetails.source === 'ticket' || Number(activeBoxDetails.boxNumber) === 0)
+    ) {
+      return activeBoxDetails
+    }
+    if (!ticketInfo || boxes.length === 0) return null
+    return boxes.find((b: { source?: string }) => b.source === 'ticket') ?? boxes[0] ?? null
+  }, [activeBoxDetails, ticketInfo, boxes])
+
   const productLines = useMemo(
-    () => (activeBoxDetails ? groupUnitsIntoLines(activeBoxDetails.units as ReceptionUnit[]) : []),
-    [activeBoxDetails]
+    () => (pitoleoBox ? groupUnitsIntoLines(pitoleoBox.units as ReceptionUnit[]) : []),
+    [pitoleoBox]
   )
+
+  const pitoleoAllSeriesComplete = useMemo(() => {
+    const units = (pitoleoBox?.units || []) as ReceptionUnit[]
+    return units.length > 0 && units.every((u) => !!(u.serie || '').trim())
+  }, [pitoleoBox])
 
   const activeProductLine = useMemo(
     () => productLines.find((line) => line.key === activeProductLineKey) || null,
     [productLines, activeProductLineKey]
   )
 
-  // Al abrir el modal: seleccionar primera línea y enfocar pitoleo
   useEffect(() => {
-    if (!activeBoxDetails) {
+    if (!pitoleoBox) {
       setActiveProductLineKey(null)
-      setSerialInput('')
-      setSerialError(null)
       return
     }
-    const lines = groupUnitsIntoLines(activeBoxDetails.units as ReceptionUnit[])
+    const lines = groupUnitsIntoLines(pitoleoBox.units as ReceptionUnit[])
     if (lines.length === 0) return
     setActiveProductLineKey((prev) => {
       if (prev && lines.some((l) => l.key === prev)) return prev
       return lines[0].key
     })
-    setTimeout(() => serialInputRef.current?.focus(), 120)
-  }, [activeBoxDetails])
+    setTimeout(() => serialInputRef.current?.focus(), 160)
+  }, [pitoleoBox?.id, pitoleoBox?.units?.length])
 
   const openBoxDetails = (box: any) => {
     setActiveUnitForReception(null)
@@ -572,25 +672,65 @@ const RecepcionModule = () => {
     setActiveBoxDetails(box)
   }
 
+  const focusSerialInput = useCallback(() => {
+    setTimeout(() => serialInputRef.current?.focus(), 120)
+  }, [])
+
+  const openPostVentaPitoleo = useCallback(
+    (lineKey: string) => {
+      const line = productLines.find((l) => l.key === lineKey)
+      if (!line) return
+      setActiveUnitForReception(null)
+      resetReceptionForm()
+      setActiveProductLineKey(line.key)
+      setSerialError(null)
+      setSerialInput('')
+      setPostVentaPitoleoOpen(true)
+      focusSerialInput()
+    },
+    [productLines, focusSerialInput]
+  )
+
+  useEffect(() => {
+    if (!pendingPitoleoLineKey || productLines.length === 0) return
+    const line = productLines.find((l) => l.key === pendingPitoleoLineKey)
+    if (!line) return
+    setPendingPitoleoLineKey(null)
+    openPostVentaPitoleo(line.key)
+  }, [pendingPitoleoLineKey, productLines, openPostVentaPitoleo])
+
   const selectProductLine = (line: ProductLine) => {
     setActiveUnitForReception(null)
     resetReceptionForm()
     setActiveProductLineKey(line.key)
     setSerialError(null)
     setSerialInput('')
-    setTimeout(() => serialInputRef.current?.focus(), 80)
+    const postVenta =
+      receptionServiceKind === 'post_venta' || ticketInfo?.ticketType === 'garantia'
+    if (postVenta) {
+      setPostVentaPitoleoOpen(true)
+      focusSerialInput()
+      return
+    }
+    setTimeout(() => {
+      pitoleoPanelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+      serialInputRef.current?.focus()
+    }, 80)
   }
 
   const refreshActiveTicketBoxes = async () => {
-    if (!activeBoxDetails) return
-    await loadBoxesForTicket(activeBoxDetails.ticket, {
+    const box = pitoleoBox ?? activeBoxDetails
+    if (!box?.ticket) return
+    await loadBoxesForTicket(box.ticket, {
       keepModalOpen: true,
-      preferredBoxId: activeBoxDetails.id,
+      preferredBoxId: box.id,
+      openPitoleo: true,
     })
   }
 
   const handleAddSerialToLine = async () => {
-    if (!activeBoxDetails || !activeProductLine) return
+    const box = pitoleoBox ?? activeBoxDetails
+    if (!box || !activeProductLine) return
     const serial = serialInput.trim().toUpperCase()
     if (!serial) {
       setSerialError('Escanea o escribe una serie')
@@ -620,7 +760,7 @@ const RecepcionModule = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'scan',
-          ticketId: activeBoxDetails.ticketId,
+          ticketId: box.ticketId,
           templateItemId: activeProductLine.templateItemId,
           serial,
         }),
@@ -641,8 +781,47 @@ const RecepcionModule = () => {
     }
   }
 
+  const handleSetLineQuantity = async (
+    lineKey: string,
+    quantity: number
+  ): Promise<string | null> => {
+    const box = pitoleoBox ?? activeBoxDetails
+    const line = productLines.find((l) => l.key === lineKey)
+    if (!box || !line) return 'Línea no encontrada'
+
+    const qty = Math.floor(quantity)
+    if (qty < line.withSerial) {
+      return `La cantidad no puede ser menor a ${line.withSerial} (series capturadas)`
+    }
+
+    setSavingLineQuantityKey(lineKey)
+    try {
+      const response = await fetch('/api/recepcion/serials', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'setQuantity',
+          ticketId: box.ticketId,
+          templateItemId: line.templateItemId,
+          quantity: qty,
+        }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        return (payload.error as string) || 'No se pudo actualizar la cantidad'
+      }
+      await refreshActiveTicketBoxes()
+      return null
+    } catch {
+      return 'Error de red al actualizar cantidad'
+    } finally {
+      setSavingLineQuantityKey(null)
+    }
+  }
+
   const handleAddAdditionalSlot = async () => {
-    if (!activeBoxDetails || !activeProductLine) return
+    const box = pitoleoBox ?? activeBoxDetails
+    if (!box || !activeProductLine) return
     if (!confirm('¿Agregar 1 cupo adicional a esta línea?')) return
 
     setAddingSerial(true)
@@ -653,7 +832,7 @@ const RecepcionModule = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'additional',
-          ticketId: activeBoxDetails.ticketId,
+          ticketId: box.ticketId,
           templateItemId: activeProductLine.templateItemId,
         }),
       })
@@ -684,9 +863,10 @@ const RecepcionModule = () => {
   }
 
   const handleCompleteTicket = async () => {
-    if (!activeBoxDetails?.ticketId) return
+    const box = pitoleoBox ?? activeBoxDetails
+    if (!box?.ticketId) return
 
-    const units = (activeBoxDetails.units || []) as ReceptionUnit[]
+    const units = (box.units || []) as ReceptionUnit[]
     if (units.length === 0) {
       alert('No hay equipos en este ticket')
       return
@@ -707,7 +887,7 @@ const RecepcionModule = () => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          ticketId: activeBoxDetails.ticketId,
+          ticketId: box.ticketId,
         }),
       })
       const payload = await response.json().catch(() => ({}))
@@ -719,7 +899,7 @@ const RecepcionModule = () => {
       const warehouseLabel = payload.warehouseName || payload.warehouseCode || 'Bodega Recepción'
       const moved = payload.movedAssets ?? 0
       alert(
-        `✓ Ticket ${activeBoxDetails.ticket} completado\n${moved} equipo(s) enviados a ${warehouseLabel}`
+        `✓ Ticket ${box.ticket} completado\n${moved} equipo(s) enviados a ${warehouseLabel}`
       )
       setActiveBoxDetails(null)
       setActiveUnitForReception(null)
@@ -737,7 +917,8 @@ const RecepcionModule = () => {
   }
 
   const handleRemoveSerialFromLine = async (unit: ReceptionUnit) => {
-    if (!activeBoxDetails) return
+    const box = pitoleoBox ?? activeBoxDetails
+    if (!box) return
     const label = unit.serie || 'cupo sin serie'
     if (!confirm(`¿Eliminar ${label} de esta línea?`)) return
 
@@ -748,7 +929,7 @@ const RecepcionModule = () => {
         method: 'DELETE',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          ticketId: activeBoxDetails.ticketId,
+          ticketId: box.ticketId,
           itemId: unit.id,
         }),
       })
@@ -1079,9 +1260,35 @@ const RecepcionModule = () => {
   // En recepción solo se gestionan series; la clasificación no bloquea el flujo
   const activeBoxCompleted = false
 
+  const isPostVentaFlow =
+    receptionServiceKind === 'post_venta' || ticketInfo?.ticketType === 'garantia'
+
+  const handleServiceKindChange = useCallback((kind: ReceptionServiceKind) => {
+    setReceptionServiceKind(kind)
+    if (kind === 'post_venta') {
+      setBoxesError(null)
+    }
+  }, [])
+
+  const startNewPostVenta = () => {
+    clearLoadedTicket()
+    setReceptionServiceKind('post_venta')
+    setBoxesError(null)
+  }
+
+  const returnToReception = () => {
+    clearLoadedTicket()
+    setTicketSearchTerm('')
+    setReceptionServiceKind('itad')
+    setBoxesError(null)
+    setPostVentaPitoleoOpen(false)
+    window.scrollTo({ top: 0, behavior: 'smooth' })
+  }
+
   return (
     <div className="space-y-10 animate-in fade-in duration-700">
       <div className="max-w-[1600px] mx-auto">
+        {!isPostVentaFlow ? (
         <div className="flex flex-col lg:flex-row lg:items-center justify-end gap-8 mb-12">
           <div className="grid grid-cols-2 gap-4">
             <div className="bg-white dark:bg-surface-900 rounded-[2.5rem] border border-gray-100 dark:border-surface-800 p-8 text-center shadow-xl shadow-gray-200/20 dark:shadow-black/20 min-w-[200px] transition-all hover:scale-105">
@@ -1094,8 +1301,28 @@ const RecepcionModule = () => {
             </div>
           </div>
         </div>
+        ) : null}
 
         <div className="mb-12 space-y-6">
+          <ReceptionQuickCreateTicket
+            clients={receptionClients}
+            loadingClients={loadingReceptionClients}
+            onRefreshClients={refreshReceptionClients}
+            onServiceKindChange={handleServiceKindChange}
+            compact={isPostVentaFlow && Boolean(ticketInfo)}
+            onCreated={async (readableId, options) => {
+              setTicketSearchTerm(readableId)
+              setBoxesError(null)
+              setReceptionServiceKind('post_venta')
+              if (options?.focusLineKey) {
+                setPendingPitoleoLineKey(options.focusLineKey)
+              }
+              await refreshAvailableTickets()
+              await loadBoxesForTicket(readableId, { openPitoleo: true })
+            }}
+          />
+
+          {!isPostVentaFlow ? (
           <div className="flex flex-col sm:flex-row gap-4">
             <div className="relative flex-1 group">
               <Plus className="absolute left-6 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400 group-focus-within:text-purple-500 transition-colors" />
@@ -1118,7 +1345,9 @@ const RecepcionModule = () => {
               {loadingBoxes ? 'Cargando...' : 'Cargar Ticket'}
             </button>
           </div>
+          ) : null}
 
+          {!isPostVentaFlow ? (
           <div className="space-y-3">
             <div className="flex items-center justify-between px-2">
               <p className="text-[10px] font-black uppercase tracking-widest text-gray-500 dark:text-surface-400">
@@ -1128,56 +1357,126 @@ const RecepcionModule = () => {
             </div>
             {availableTickets.length === 0 && !loadingTickets ? (
               <p className="text-sm text-gray-500 dark:text-surface-500 px-2">
-                No hay tickets activos. Crea uno en Tickets (con foto OCR si aplica).
+                No hay tickets activos. Use el panel superior para crear uno por ITAD, Post-Venta o Cliente Final.
               </p>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-3">
                 {availableTickets.map((ticket) => {
                   const isActive = ticketInfo?.readableId === ticket.readableId
+                  const isDeleting = deletingTicketId === ticket.readableId
                   return (
-                    <button
+                    <div
                       key={ticket.id}
-                      type="button"
-                      onClick={() => selectTicketFromList(ticket)}
                       className={cn(
-                        'text-left rounded-2xl border p-4 transition-all',
+                        'relative rounded-2xl border p-4 transition-all',
                         isActive
                           ? 'border-purple-500 bg-purple-500/10 shadow-lg shadow-purple-500/10'
                           : 'border-gray-100 dark:border-surface-800 bg-white dark:bg-surface-900 hover:border-purple-400/50'
                       )}
                     >
-                      <div className="flex items-start justify-between gap-3">
-                        <div>
-                          <p className="text-sm font-black text-gray-900 dark:text-white uppercase tracking-wide">
-                            {ticket.readableId}
-                          </p>
-                          <p className="text-xs text-gray-500 dark:text-surface-400 mt-1 truncate">
-                            {ticket.client}
-                          </p>
+                      <button
+                        type="button"
+                        onClick={() => selectTicketFromList(ticket)}
+                        className="w-full text-left pr-10"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div>
+                            <p className="text-sm font-black text-gray-900 dark:text-white uppercase tracking-wide">
+                              {ticket.readableId}
+                            </p>
+                            <p className="text-xs text-gray-500 dark:text-surface-400 mt-1 truncate">
+                              {ticket.client}
+                            </p>
+                          </div>
+                          <span className="text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400 shrink-0">
+                            {ticket.pendingCount}/{ticket.itemCount} pend.
+                          </span>
                         </div>
-                        <span className="text-[9px] font-black uppercase tracking-widest px-2 py-1 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400">
-                          {ticket.pendingCount}/{ticket.itemCount} pend.
-                        </span>
-                      </div>
-                      <p className="text-[11px] text-gray-400 dark:text-surface-500 mt-2 truncate">
-                        {ticket.title}
-                      </p>
-                    </button>
+                        <p className="text-[11px] text-gray-400 dark:text-surface-500 mt-2 truncate">
+                          {ticket.title}
+                        </p>
+                      </button>
+                      <button
+                        type="button"
+                        disabled={Boolean(deletingTicketId)}
+                        onClick={() => void deleteTicketByReadableId(ticket.readableId)}
+                        className="absolute top-3 right-3 p-1.5 rounded-lg text-gray-400 hover:text-rose-600 hover:bg-rose-50 dark:hover:bg-rose-500/10 disabled:opacity-40"
+                        title={`Eliminar ${ticket.readableId}`}
+                        aria-label={`Eliminar ticket ${ticket.readableId}`}
+                      >
+                        {isDeleting ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Trash2 className="w-4 h-4" />
+                        )}
+                      </button>
+                    </div>
                   )
                 })}
               </div>
             )}
           </div>
+          ) : null}
 
-          {boxesError && (
+          {boxesError && !isPostVentaFlow ? (
             <div className="p-4 bg-rose-50 dark:bg-rose-500/10 border border-rose-100 dark:border-rose-500/20 rounded-2xl flex items-center gap-3">
               <X className="w-4 h-4 text-rose-500" />
               <p className="text-[10px] font-black uppercase tracking-widest text-rose-600 dark:text-rose-400">{boxesError}</p>
             </div>
-          )}
+          ) : null}
+
+          {boxesError && isPostVentaFlow && ticketInfo ? (
+            <div className="p-4 bg-rose-50 dark:bg-rose-500/10 border border-rose-100 dark:border-rose-500/20 rounded-2xl flex items-center gap-3">
+              <X className="w-4 h-4 text-rose-500" />
+              <p className="text-[10px] font-black uppercase tracking-widest text-rose-600 dark:text-rose-400">{boxesError}</p>
+            </div>
+          ) : null}
         </div>
 
-        {ticketInfo && (
+        {isPostVentaFlow && ticketInfo ? (
+          <div className="mb-6 flex flex-wrap items-center justify-between gap-3 px-2">
+            <div className="min-w-0">
+              <p className="text-[10px] font-black uppercase tracking-widest text-purple-600 dark:text-purple-400">
+                Post-Venta en curso
+              </p>
+              <p className="text-sm font-black text-gray-900 dark:text-white">
+                {ticketInfo.readableId} · {ticketInfo.client}
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={returnToReception}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-purple-600 text-white hover:bg-purple-500 shadow-md shadow-purple-500/20"
+              >
+                <ArrowLeft className="w-3.5 h-3.5" />
+                Regresar a recepción
+              </button>
+              <button
+                type="button"
+                onClick={startNewPostVenta}
+                className="px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest border border-gray-200 dark:border-surface-700 text-gray-700 dark:text-surface-200 hover:bg-gray-50 dark:hover:bg-surface-900"
+              >
+                Nuevo Post-Venta
+              </button>
+              <button
+                type="button"
+                disabled={Boolean(deletingTicketId)}
+                onClick={() => void deleteTicketByReadableId(ticketInfo.readableId)}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-rose-600 text-white hover:bg-rose-500 disabled:opacity-50"
+              >
+                {deletingTicketId === ticketInfo.readableId ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Trash2 className="w-3.5 h-3.5" />
+                )}
+                Eliminar
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        {ticketInfo && !isPostVentaFlow ? (
           <div className="mb-8 px-8 py-5 bg-gray-50/50 dark:bg-surface-950/50 rounded-[2rem] border border-gray-100 dark:border-surface-800 flex flex-wrap gap-8 items-center">
             <div className="flex flex-col">
               <span className="text-[9px] font-black uppercase tracking-widest text-gray-500 dark:text-surface-400 leading-none mb-1.5">Ticket ID</span>
@@ -1202,19 +1501,123 @@ const RecepcionModule = () => {
                 </div>
               </>
             )}
-            {ticketInfo.attachmentUrl && (
-              <a
-                href={ticketInfo.attachmentUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="ml-auto px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-emerald-600 text-white hover:bg-emerald-500"
+            <div className="ml-auto flex flex-wrap items-center gap-2">
+              {ticketInfo.attachmentUrl ? (
+                <a
+                  href={ticketInfo.attachmentUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-emerald-600 text-white hover:bg-emerald-500"
+                >
+                  Ver recibo
+                </a>
+              ) : null}
+              <button
+                type="button"
+                disabled={Boolean(deletingTicketId)}
+                onClick={() => void deleteTicketByReadableId(ticketInfo.readableId)}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-rose-600 text-white hover:bg-rose-500 disabled:opacity-50"
               >
-                Ver recibo
-              </a>
-            )}
+                {deletingTicketId === ticketInfo.readableId ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Trash2 className="w-3.5 h-3.5" />
+                )}
+                Eliminar {ticketInfo.readableId}
+              </button>
+            </div>
           </div>
-        )}
+        ) : null}
 
+        {isPostVentaFlow && ticketInfo && pitoleoBox ? (
+          <div className="mb-10">
+            <ReceptionConduceWorkbench
+              ticketLabel={ticketInfo.readableId}
+              productLines={productLines}
+              activeProductLineKey={activeProductLineKey}
+              activeProductLine={activeProductLine}
+              pitoleoInline={false}
+              onOpenPitoleoByQuantity={openPostVentaPitoleo}
+              allowEditQuantity
+              onSaveLineQuantity={handleSetLineQuantity}
+              savingLineQuantityKey={savingLineQuantityKey}
+              serialInput={serialInput}
+              onSerialInputChange={(value) => {
+                setSerialInput(value)
+                setSerialError(null)
+              }}
+              onSerialKeyDown={(e) => {
+                if (e.key === 'Enter') {
+                  e.preventDefault()
+                  void handleAddSerialToLine()
+                }
+              }}
+              serialError={serialError}
+              addingSerial={addingSerial}
+              onRemoveSerial={(unit) =>
+                void handleRemoveSerialFromLine(unit as ReceptionUnit)
+              }
+              onAddAdditionalSlot={() => void handleAddAdditionalSlot()}
+              serialInputRef={serialInputRef}
+              pitoleoPanelRef={pitoleoPanelRef}
+              inputsDisabled={!!activeBoxLabel}
+              showCompleteFooter
+              allSeriesComplete={pitoleoAllSeriesComplete}
+              completingTicket={completingTicket}
+              onCompleteTicket={() => void handleCompleteTicket()}
+            />
+            <ReceptionPitoleoModalShell
+              open={postVentaPitoleoOpen && Boolean(activeProductLine)}
+              title="Pistoleo de series"
+              subtitle={
+                activeProductLine
+                  ? `${activeProductLine.tipo} · ${activeProductLine.marca} ${activeProductLine.modelo}`
+                  : undefined
+              }
+              onClose={() => setPostVentaPitoleoOpen(false)}
+            >
+              {activeProductLine ? (
+                <ReceptionPitoleoPanel
+                  line={{
+                    key: activeProductLine.key,
+                    marca: activeProductLine.marca,
+                    modelo: activeProductLine.modelo,
+                    tipo: activeProductLine.tipo,
+                    quantity: activeProductLine.quantity,
+                    withSerial: activeProductLine.withSerial,
+                    units: activeProductLine.units.map((u) => ({
+                      id: u.id,
+                      serie: u.serie,
+                    })),
+                  }}
+                  serialInput={serialInput}
+                  onSerialInputChange={(value) => {
+                    setSerialInput(value)
+                    setSerialError(null)
+                  }}
+                  onSerialKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      e.preventDefault()
+                      void handleAddSerialToLine()
+                    }
+                  }}
+                  serialError={serialError}
+                  addingSerial={addingSerial}
+                  onRemoveSerial={(unit) =>
+                    void handleRemoveSerialFromLine(unit as ReceptionUnit)
+                  }
+                  onAddAdditionalSlot={() => void handleAddAdditionalSlot()}
+                  serialInputRef={serialInputRef}
+                  panelRef={pitoleoPanelRef}
+                  inputsDisabled={!!activeBoxLabel}
+                />
+              ) : null}
+            </ReceptionPitoleoModalShell>
+          </div>
+        ) : null}
+
+        {!isPostVentaFlow ? (
+        <>
         <div className="flex p-2 bg-gray-100/50 dark:bg-surface-950 rounded-[2rem] gap-2 border border-gray-100 dark:border-surface-800 shadow-inner mb-8 w-fit">
           <button
             onClick={() => setFilterStatus('all')}
@@ -1307,6 +1710,16 @@ const RecepcionModule = () => {
                         alert('No se puede editar. Esta caja ya fue completada.')
                         return
                       }
+                      if (box.source === 'ticket' || box.boxNumber === 0) {
+                        setActiveBoxDetails(box)
+                        const lines = groupUnitsIntoLines((box.units || []) as ReceptionUnit[])
+                        if (lines[0]) selectProductLine(lines[0])
+                        document.getElementById('pitoleo-workbench')?.scrollIntoView({
+                          behavior: 'smooth',
+                          block: 'start',
+                        })
+                        return
+                      }
                       openBoxDetails(box)
                     }}
                     disabled={isCompleted}
@@ -1344,8 +1757,10 @@ const RecepcionModule = () => {
             )
           })}
         </div>
+        </>
+        ) : null}
 
-        {activeBoxDetails && (
+        {activeBoxDetails && activeBoxDetails.boxNumber > 0 && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 md:p-10">
             <div
               className="absolute inset-0 bg-gray-900/60 dark:bg-black/80 backdrop-blur-xl animate-in fade-in duration-500"
@@ -1413,57 +1828,199 @@ const RecepcionModule = () => {
                 </div>
               </div>
 
-              {/* Modal Content */}
-              <div className="flex-1 overflow-hidden grid lg:grid-cols-[280px,1fr]">
-                {/* Líneas de producto */}
-                <div className="overflow-y-auto p-3 space-y-2 bg-gray-50/40 dark:bg-surface-950/40 border-r border-gray-100 dark:border-surface-800">
-                  <p className="text-[9px] font-black uppercase tracking-widest text-gray-500 dark:text-surface-400 px-1 mb-1">
-                    Líneas ({productLines.length}) · {activeBoxDetails.units.length} activos
-                  </p>
-                  {productLines.map((line) => {
-                    const isSelected = activeProductLineKey === line.key && !activeUnitForReception
-                    return (
-                      <button
-                        key={line.key}
-                        type="button"
-                        onClick={() => selectProductLine(line)}
-                        className={cn(
-                          "w-full text-left relative flex flex-col gap-1.5 p-3 rounded-xl border transition-all",
-                          isSelected
-                            ? "bg-white dark:bg-surface-900 border-purple-500/50 shadow-md"
-                            : "bg-white dark:bg-surface-900/50 border-gray-100 dark:border-surface-800 hover:border-purple-400/40"
-                        )}
-                      >
-                        {isSelected && <span className="absolute top-0 left-0 w-1 h-full bg-purple-500 rounded-l-xl" />}
-                        <div className="flex items-start justify-between gap-2">
-                          <div className="min-w-0">
-                            <p className="text-xs font-black uppercase text-gray-900 dark:text-white truncate">
-                              {line.marca} {line.modelo}
-                            </p>
-                            <p className="text-[9px] font-bold uppercase tracking-widest text-purple-600 dark:text-purple-400 mt-0.5">
-                              {line.tipo}
-                            </p>
-                          </div>
-                          <div className="text-right shrink-0">
-                            <p className="text-lg font-black text-gray-900 dark:text-white leading-none">{line.quantity}</p>
-                            <p className="text-[8px] font-black uppercase tracking-widest text-gray-400">Cant.</p>
-                          </div>
-                        </div>
-                        <div className="flex items-center justify-between">
-                          <span className={cn(
-                            "text-[9px] font-black uppercase tracking-widest",
-                            line.withSerial >= line.quantity ? "text-emerald-500" : "text-amber-500"
-                          )}>
-                            Series {line.withSerial}/{line.quantity}
-                          </span>
-                          <span className="text-[9px] font-bold uppercase tracking-widest text-purple-500">Detalle →</span>
-                        </div>
-                      </button>
-                    )
-                  })}
-                </div>
+              {/* Modal Content — listado sin columna Series; pitoleo debajo */}
+              <div className="flex-1 flex flex-col min-h-0">
+                <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-white dark:bg-surface-900">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <span className="flex h-7 w-7 items-center justify-center rounded-full bg-indigo-600 text-[11px] font-black text-white shrink-0">
+                        2
+                      </span>
+                      <p className="text-[10px] font-black uppercase tracking-widest text-gray-900 dark:text-white">
+                        Listado de equipos del conduce
+                      </p>
+                    </div>
+                    <span className="text-[9px] font-black uppercase tracking-widest text-gray-500 dark:text-surface-400">
+                      {productLines.length} ítem(s)
+                    </span>
+                  </div>
 
-                <div className="overflow-y-auto p-4 bg-white dark:bg-surface-900">
+                  {productLines.length === 0 ? (
+                    <div className="rounded-2xl border border-dashed border-gray-200 dark:border-surface-700 p-12 text-center">
+                      <Package className="mx-auto w-10 h-10 text-gray-300 mb-2 opacity-60" />
+                      <p className="text-xs font-black uppercase tracking-widest text-gray-400">
+                        El manifiesto está vacío
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="overflow-x-auto rounded-2xl border border-gray-100 dark:border-surface-800 bg-white dark:bg-surface-900">
+                      <table className="w-full min-w-[640px] text-left">
+                        <thead className="bg-gray-50 dark:bg-surface-950 text-[9px] font-black uppercase tracking-widest text-gray-500 dark:text-surface-400">
+                          <tr>
+                            <th className="px-3 py-2.5">Tipos</th>
+                            <th className="px-3 py-2.5">Marca</th>
+                            <th className="px-3 py-2.5">Modelo</th>
+                            <th className="px-3 py-2.5 text-center">Cantidad</th>
+                            <th className="px-3 py-2.5 text-center">Recibido</th>
+                            <th className="px-3 py-2.5 text-center">Pendiente</th>
+                            <th className="px-3 py-2.5 text-right">Acciones</th>
+                          </tr>
+                        </thead>
+                        <tbody className="text-xs">
+                          {productLines.map((line) => {
+                            const pending = Math.max(line.quantity - line.withSerial, 0)
+                            const isSelected =
+                              activeProductLineKey === line.key && !activeUnitForReception
+                            return (
+                              <tr
+                                key={line.key}
+                                role="button"
+                                tabIndex={0}
+                                onClick={() => selectProductLine(line)}
+                                onKeyDown={(e) => {
+                                  if (e.key === 'Enter' || e.key === ' ') {
+                                    e.preventDefault()
+                                    selectProductLine(line)
+                                  }
+                                }}
+                                className={cn(
+                                  'border-t border-gray-100 dark:border-surface-800 cursor-pointer transition-colors',
+                                  isSelected
+                                    ? 'bg-cyan-500/10 ring-2 ring-inset ring-cyan-500/40'
+                                    : 'hover:bg-gray-50/90 dark:hover:bg-surface-950/60'
+                                )}
+                              >
+                                <td className="px-3 py-2.5 font-bold text-gray-800 dark:text-white">{line.tipo}</td>
+                                <td className="px-3 py-2.5 text-gray-700 dark:text-surface-200">{line.marca}</td>
+                                <td className="px-3 py-2.5 text-gray-700 dark:text-surface-200">{line.modelo}</td>
+                                <td className="px-3 py-2.5 text-center font-mono font-black text-gray-900 dark:text-white">
+                                  {line.quantity}
+                                </td>
+                                <td className="px-3 py-2.5 text-center font-mono font-black text-emerald-600 dark:text-emerald-400">
+                                  {line.withSerial}
+                                </td>
+                                <td className="px-3 py-2.5 text-center font-mono font-black text-amber-600 dark:text-amber-400">
+                                  {pending}
+                                </td>
+                                <td className="px-3 py-2.5 text-right">
+                                  <span
+                                    className={cn(
+                                      'inline-flex p-2 rounded-lg',
+                                      isSelected ? 'bg-cyan-600 text-white' : 'bg-cyan-600/15 text-cyan-700 dark:text-cyan-400'
+                                    )}
+                                    aria-hidden
+                                  >
+                                    <ScanBarcode className="w-4 h-4" />
+                                  </span>
+                                </td>
+                              </tr>
+                            )
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+
+                  {activeProductLine && !activeUnitForReception ? (
+                    <div
+                      ref={pitoleoPanelRef}
+                      className="rounded-2xl border-2 border-cyan-500/35 bg-cyan-500/[0.04] dark:bg-cyan-500/5 p-4 sm:p-5 space-y-4 animate-in fade-in slide-in-from-top-2 duration-300"
+                    >
+                      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-[10px] font-bold uppercase tracking-widest text-cyan-700 dark:text-cyan-400">
+                            {activeProductLine.tipo} • {activeProductLine.marca}
+                          </p>
+                          <h4 className="text-lg sm:text-xl font-black text-gray-900 dark:text-white tracking-tight">
+                            {activeProductLine.modelo}
+                          </h4>
+                          <p className="text-[9px] font-black uppercase tracking-widest text-gray-500 mt-1">
+                            {activeProductLine.withSerial}/{activeProductLine.quantity} series ·{' '}
+                            {Math.max(activeProductLine.quantity - activeProductLine.withSerial, 0)} pendiente(s)
+                          </p>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => void handleAddAdditionalSlot()}
+                          disabled={addingSerial || !!activeBoxLabel || activeBoxCompleted}
+                          className="shrink-0 px-3 py-2 rounded-xl border border-cyan-600/30 text-cyan-800 dark:text-cyan-300 text-[9px] font-black uppercase tracking-widest hover:bg-cyan-500/10 disabled:opacity-50"
+                        >
+                          <Plus className="w-3 h-3 inline mr-1" />
+                          Cupo adicional
+                        </button>
+                      </div>
+
+                      {activeProductLine.withSerial >= activeProductLine.quantity ? (
+                        <p className="text-[10px] font-bold uppercase tracking-widest text-emerald-600 dark:text-emerald-400 text-center py-2">
+                          Línea completa — use Cupo adicional si ingresa más equipos
+                        </p>
+                      ) : (
+                        <div className="space-y-2">
+                          <input
+                            ref={serialInputRef}
+                            value={serialInput}
+                            onChange={(e) => {
+                              setSerialInput(e.target.value)
+                              setSerialError(null)
+                            }}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') {
+                                e.preventDefault()
+                                void handleAddSerialToLine()
+                              }
+                            }}
+                            placeholder={`Pistolear serie ${activeProductLine.withSerial + 1} (Enter para confirmar)`}
+                            disabled={addingSerial || !!activeBoxLabel || activeBoxCompleted}
+                            className="w-full px-4 py-4 rounded-xl bg-white dark:bg-surface-950 border-2 border-gray-100 dark:border-surface-800 font-mono text-sm sm:text-base font-bold text-gray-900 dark:text-white focus:outline-none focus:border-cyan-500 disabled:opacity-50"
+                            autoComplete="off"
+                          />
+                          {serialError ? (
+                            <p className="text-[9px] font-black uppercase tracking-widest text-rose-500">
+                              {serialError}
+                            </p>
+                          ) : activeProductLine.withSerial === 0 ? (
+                            <p className="text-[10px] text-center text-gray-400 font-medium">
+                              Escanee la primera serie para comenzar…
+                            </p>
+                          ) : null}
+                          <p className="text-[9px] font-mono font-bold text-gray-400 text-right">
+                            {activeProductLine.withSerial} / {activeProductLine.quantity}
+                          </p>
+                        </div>
+                      )}
+
+                      {activeProductLine.units.some((u) => (u.serie || '').trim()) ? (
+                        <div className="space-y-1.5 pt-2 border-t border-cyan-500/20">
+                          <p className="text-[9px] font-black uppercase tracking-widest text-gray-500">
+                            Series capturadas
+                          </p>
+                          <div className="flex flex-wrap gap-2">
+                            {activeProductLine.units
+                              .filter((u) => (u.serie || '').trim())
+                              .map((unit) => (
+                                <div
+                                  key={unit.id}
+                                  className="inline-flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-white dark:bg-surface-900 border border-gray-100 dark:border-surface-800"
+                                >
+                                  <span className="font-mono text-[11px] font-bold">{unit.serie}</span>
+                                  <button
+                                    type="button"
+                                    title="Quitar serie"
+                                    onClick={() => void handleRemoveSerialFromLine(unit)}
+                                    disabled={addingSerial || !!activeBoxLabel}
+                                    className="text-rose-500 hover:text-rose-600 disabled:opacity-40"
+                                  >
+                                    <Trash2 size={12} />
+                                  </button>
+                                </div>
+                              ))}
+                          </div>
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
+
+                  <div className="border-t border-gray-100 dark:border-surface-800 pt-4">
                   {activeUnitForReception ? (
                     <div className="space-y-10 animate-in slide-in-from-right duration-700">
                       <div className="flex items-center justify-between group">
@@ -1851,153 +2408,36 @@ const RecepcionModule = () => {
                         </p>
                       </div>
                     </div>
-                  ) : activeProductLine ? (
-                    <div className="space-y-3 animate-in slide-in-from-right duration-300">
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="min-w-0">
-                          <p className="text-[9px] font-black uppercase tracking-widest text-purple-600 dark:text-purple-400">
-                            Detalle de línea
-                          </p>
-                          <h4 className="text-base font-black text-gray-900 dark:text-white uppercase tracking-tight truncate">
-                            {activeProductLine.marca} {activeProductLine.modelo}
-                          </h4>
-                          <p className="text-[10px] font-bold text-gray-500 uppercase tracking-widest">
-                            {activeProductLine.tipo}
-                          </p>
-                        </div>
-                        <div className="flex items-center gap-2 shrink-0">
-                          <div className="rounded-lg border border-gray-100 dark:border-surface-800 bg-gray-50 dark:bg-surface-950 px-3 py-2 text-center">
-                            <p className="text-lg font-black text-gray-900 dark:text-white leading-none">{activeProductLine.quantity}</p>
-                            <p className="text-[8px] font-black uppercase tracking-widest text-gray-400 mt-1">Recibir</p>
-                          </div>
-                          <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 px-3 py-2 text-center">
-                            <p className="text-lg font-black text-emerald-500 leading-none">{activeProductLine.withSerial}</p>
-                            <p className="text-[8px] font-black uppercase tracking-widest text-emerald-600/80 mt-1">Serie</p>
-                          </div>
-                          <div className="rounded-lg border border-amber-500/20 bg-amber-500/5 px-3 py-2 text-center">
-                            <p className="text-lg font-black text-amber-500 leading-none">
-                              {Math.max(activeProductLine.quantity - activeProductLine.withSerial, 0)}
-                            </p>
-                            <p className="text-[8px] font-black uppercase tracking-widest text-amber-600/80 mt-1">Sin</p>
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className={cn(
-                        'rounded-xl border p-3 space-y-2',
-                        activeProductLine.withSerial >= activeProductLine.quantity
-                          ? 'border-emerald-500/30 bg-emerald-500/5'
-                          : 'border-purple-500/30 bg-purple-500/5'
-                      )}>
-                        <div className="flex items-center justify-between gap-2 flex-wrap">
-                          <div className="flex items-center gap-2">
-                            <ScanBarcode className={cn(
-                              'w-4 h-4',
-                              activeProductLine.withSerial >= activeProductLine.quantity ? 'text-emerald-500' : 'text-purple-500'
-                            )} />
-                            <p className={cn(
-                              'text-[9px] font-black uppercase tracking-widest',
-                              activeProductLine.withSerial >= activeProductLine.quantity
-                                ? 'text-emerald-600 dark:text-emerald-400'
-                                : 'text-purple-600 dark:text-purple-400'
-                            )}>
-                              {activeProductLine.withSerial >= activeProductLine.quantity
-                                ? `Series ${activeProductLine.withSerial}/${activeProductLine.quantity}`
-                                : `Pitoleo · ${activeProductLine.withSerial}/${activeProductLine.quantity}`}
-                            </p>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => void handleAddAdditionalSlot()}
-                            disabled={addingSerial || !!activeBoxLabel || activeBoxCompleted}
-                            className="px-2.5 py-1.5 rounded-lg border border-purple-500/40 text-purple-600 dark:text-purple-400 text-[9px] font-black uppercase tracking-widest hover:bg-purple-500/10 disabled:opacity-50 flex items-center gap-1"
-                          >
-                            <Plus className="w-3 h-3" />
-                            Adicional
-                          </button>
-                        </div>
-                        {activeProductLine.withSerial >= activeProductLine.quantity ? (
-                          <p className="text-[9px] font-bold uppercase tracking-widest text-emerald-600 dark:text-emerald-400">
-                            Cupos llenos · usa Adicional para más
-                          </p>
-                        ) : (
-                          <div className="flex gap-2">
-                            <input
-                              ref={serialInputRef}
-                              value={serialInput}
-                              onChange={(e) => {
-                                setSerialInput(e.target.value)
-                                setSerialError(null)
-                              }}
-                              onKeyDown={(e) => {
-                                if (e.key === 'Enter') {
-                                  e.preventDefault()
-                                  void handleAddSerialToLine()
-                                }
-                              }}
-                              placeholder="Serie + Enter"
-                              disabled={addingSerial || !!activeBoxLabel || activeBoxCompleted}
-                              className="flex-1 px-3 py-2 rounded-lg bg-white dark:bg-surface-950 border border-gray-100 dark:border-surface-800 font-mono text-sm font-bold text-gray-900 dark:text-white focus:outline-none focus:border-purple-500 disabled:opacity-50"
-                              autoComplete="off"
-                            />
-                            <button
-                              type="button"
-                              onClick={() => void handleAddSerialToLine()}
-                              disabled={addingSerial || !serialInput.trim() || !!activeBoxLabel || activeBoxCompleted}
-                              className="px-3 py-2 rounded-lg bg-purple-600 text-white text-[9px] font-black uppercase tracking-widest hover:bg-purple-500 disabled:opacity-50 flex items-center gap-1"
-                            >
-                              {addingSerial ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
-                              Serie
-                            </button>
-                          </div>
-                        )}
-                        {serialError && (
-                          <p className="text-[9px] font-black uppercase tracking-widest text-rose-500">{serialError}</p>
-                        )}
-                      </div>
-
-                      <div className="space-y-1.5">
-                        <p className="text-[9px] font-black uppercase tracking-widest text-gray-500 dark:text-surface-400 px-0.5">
-                          Series en esta línea
-                        </p>
-                        {activeProductLine.units.map((unit) => (
-                          <div
-                            key={unit.id}
-                            className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg border border-gray-100 dark:border-surface-800 bg-gray-50/80 dark:bg-surface-950/60"
-                          >
-                            <div className="min-w-0">
-                              <p className="font-mono text-xs font-black text-gray-900 dark:text-white truncate">
-                                {unit.serie || 'Sin serie'}
-                              </p>
-                              <p className={cn(
-                                'text-[8px] font-black uppercase tracking-widest',
-                                unit.serie ? 'text-emerald-500' : 'text-amber-500'
-                              )}>
-                                {unit.serie ? 'Serie registrada' : 'Sin serie'}
-                              </p>
-                            </div>
-                            <button
-                              type="button"
-                              title="Eliminar serie"
-                              onClick={() => void handleRemoveSerialFromLine(unit)}
-                              disabled={addingSerial || !!activeBoxLabel}
-                              className="p-1.5 rounded-lg bg-red-500/10 text-red-500 hover:bg-red-500/20 disabled:opacity-50"
-                            >
-                              <Trash2 size={14} />
-                            </button>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="h-full flex flex-col items-center justify-center p-8 text-center">
-                      <Package size={36} className="text-gray-300 mb-3 opacity-50" />
-                      <h4 className="text-sm font-black text-gray-400 uppercase tracking-tight mb-1">Selecciona una línea</h4>
-                      <p className="text-[9px] font-bold uppercase tracking-widest text-gray-400 max-w-xs">
-                        Elige un producto a la izquierda
+                  ) : productLines.length > 0 && !activeProductLine ? (
+                    <div className="flex flex-col items-center justify-center p-8 text-center rounded-2xl border border-dashed border-gray-100 dark:border-surface-800">
+                      <ScanBarcode size={32} className="text-gray-300 mb-3 opacity-60" />
+                      <h4 className="text-sm font-black text-gray-400 uppercase tracking-tight mb-1">
+                        Pitoleo de series
+                      </h4>
+                      <p className="text-[9px] font-bold uppercase tracking-widest text-gray-400 max-w-sm">
+                        Pulse una fila del listado para abrir el pitoleo de series
                       </p>
                     </div>
-                  )}
+                  ) : null}
+                  </div>
+                </div>
+
+                <div className="shrink-0 p-4 border-t border-gray-100 dark:border-surface-800 bg-gray-50/80 dark:bg-surface-950/80">
+                  <button
+                    type="button"
+                    disabled={
+                      completingTicket ||
+                      !((activeBoxDetails.units || []) as ReceptionUnit[]).every((u) =>
+                        !!(u.serie || '').trim()
+                      )
+                    }
+                    onClick={() => void handleCompleteTicket()}
+                    className="w-full py-4 rounded-2xl font-black uppercase tracking-[0.2em] text-[11px] transition-all disabled:opacity-40 disabled:cursor-not-allowed bg-gray-200 dark:bg-surface-800 text-gray-500 dark:text-surface-400 enabled:bg-indigo-600 enabled:text-white enabled:hover:bg-indigo-500 enabled:shadow-lg"
+                  >
+                    {((activeBoxDetails.units || []) as ReceptionUnit[]).every((u) => !!(u.serie || '').trim())
+                      ? 'Series completas — enviar a bodega'
+                      : 'Complete el pistoleo de series'}
+                  </button>
                 </div>
               </div>
             </div>

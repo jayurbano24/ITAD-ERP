@@ -100,7 +100,11 @@ export async function GET(request: NextRequest) {
 
     // Mapeo de tipo a tabla y campo (solo para tipos que tienen catálogo en BD)
     const catalogMap: Record<string, { table: string, field: string; extraFields?: string[] }> = {
-      procesador: { table: 'catalog_processors', field: 'name' },
+      procesador: {
+        table: 'catalog_processors',
+        field: 'name',
+        extraFields: ['brand', 'generation', 'model'],
+      },
       teclado: { table: 'catalog_keyboards', field: 'name' },
       accesorios: { table: 'catalog_accessories', field: 'name' },
       marca: { table: 'catalog_brands', field: 'name' },

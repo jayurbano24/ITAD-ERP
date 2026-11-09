@@ -97,8 +97,7 @@ const statusLabels: Record<string, string> = {
 const diagnosisActions = [
   { label: 'Diagnóstico', key: 'diagnostico' },
   { label: 'Hardvesting', key: 'hardvesting' },
-  { label: 'Borrado', key: 'borrado' },
-  { label: 'Destrucción', key: 'destruccion' }
+  { label: 'Destrucción', key: 'destruccion' },
 ]
 
 const statusChips = [

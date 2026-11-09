@@ -199,7 +199,7 @@ export async function GET(request: Request) {
 
     const { data: ticketRecord, error: ticketError } = await supabase
       .from('operations_tickets')
-      .select('id, readable_id, title, pickup_address, pickup_date, attachment_url, attachment_name, client:crm_entities ( commercial_name )')
+      .select('id, readable_id, title, ticket_type, pickup_address, pickup_date, attachment_url, attachment_name, client:crm_entities ( commercial_name )')
       .eq('id', ticketId)
       .maybeSingle()
 
@@ -314,6 +314,7 @@ export async function GET(request: Request) {
       ticket: {
         id: ticketRecord.id,
         readableId: readableLabel,
+        ticketType: (ticketRecord as { ticket_type?: string | null }).ticket_type ?? null,
         client: clientName,
         lotNumber,
         pickupAddress: (ticketRecord as { pickup_address?: string | null }).pickup_address || null,
