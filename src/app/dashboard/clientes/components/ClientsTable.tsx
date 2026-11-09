@@ -214,9 +214,9 @@ export default function ClientsTable({ initialClients }: ClientsTableProps) {
       bucket.push(c)
       map.set(c.parent_entity_id, bucket)
     }
-    for (const [, list] of map) {
+    Array.from(map.values()).forEach((list) => {
       list.sort((a, b) => a.commercial_name.localeCompare(b.commercial_name, 'es'))
-    }
+    })
     return map
   }, [clients])
 

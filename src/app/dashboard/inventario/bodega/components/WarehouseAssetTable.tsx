@@ -211,7 +211,10 @@ type WarehouseAssetRow = {
 
 const EMPTY_FILTER_LABEL = '(Vacío)'
 
-function opensEquipmentEditorOnSerial(warehouseCode: string | null | undefined, sectionCode: string) {
+function opensEquipmentEditorOnSerial(
+  warehouseCode: string | null | undefined,
+  sectionCode: string | null | undefined
+) {
   const code = warehouseCode || sectionCode
   return code === 'BOD-REC' || code === 'BOD-REM'
 }

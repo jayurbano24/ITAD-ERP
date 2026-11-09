@@ -20,5 +20,5 @@ export const CLASSIFICATION_C_OPTIONS = [
   { value: 'C9', label: 'C9: Nuevo, caja abierta' },
 ] as const
 
-export const F_VALUES = new Set(CLASSIFICATION_F_OPTIONS.map((o) => o.value))
-export const C_VALUES = new Set(CLASSIFICATION_C_OPTIONS.map((o) => o.value))
+export const F_VALUES = new Set<string>(CLASSIFICATION_F_OPTIONS.map((o) => o.value))
+export const C_VALUES = new Set<string>(CLASSIFICATION_C_OPTIONS.map((o) => o.value))
