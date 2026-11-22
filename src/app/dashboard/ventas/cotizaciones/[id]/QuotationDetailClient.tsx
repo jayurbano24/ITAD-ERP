@@ -22,6 +22,7 @@ import {
   addQuotationComment,
   addQuotationApprovalAdvance,
   updateQuotationDiscount,
+  updateQuotationWarrantyDays,
   approveQuotation,
   rejectQuotation,
   acceptQuotation,
@@ -43,6 +44,8 @@ import { QuotationAvanceListItem } from '../components/QuotationAvanceListItem'
 import QuotationDiscountModal, {
   type DiscountFormValue,
 } from '../components/QuotationDiscountModal'
+import WarrantyDaysSelect from '../components/WarrantyDaysSelect'
+import { DEFAULT_WARRANTY_DAYS } from '@/lib/ventas/warrantyOptions'
 
 const fieldClass =
   'w-full rounded-lg border border-gray-300 dark:border-surface-600 bg-white dark:bg-white px-3 py-2 text-sm text-gray-900 placeholder:text-gray-500 mb-3'
@@ -76,10 +79,18 @@ export default function QuotationDetailClient({
   const [pdfPreviewOpen, setPdfPreviewOpen] = useState(false)
   const [pdfPreviewPayload, setPdfPreviewPayload] = useState<QuotationPrintPayload | null>(null)
   const [showDiscount, setShowDiscount] = useState(false)
+  const [warrantyDays, setWarrantyDays] = useState(
+    quotation.warranty_days ?? DEFAULT_WARRANTY_DAYS
+  )
+  const [warrantySaving, setWarrantySaving] = useState(false)
 
   useEffect(() => {
     setComments(initialComments)
   }, [initialComments])
+
+  useEffect(() => {
+    setWarrantyDays(quotation.warranty_days ?? DEFAULT_WARRANTY_DAYS)
+  }, [quotation.warranty_days])
 
   const status = quotation.status as QuotationStatus
 
@@ -211,11 +222,37 @@ export default function QuotationDetailClient({
     router.refresh()
   }
 
+  const handleSaveWarranty = async () => {
+    setWarrantySaving(true)
+    setError(null)
+    const res = await updateQuotationWarrantyDays(quotation.id, warrantyDays)
+    setWarrantySaving(false)
+    if (!res.success) {
+      setError(res.error || 'No se pudo actualizar la garantía')
+      return
+    }
+    refresh()
+  }
+
   return (
     <div className="space-y-4 print:hidden">
       {error && (
         <p className="text-sm text-red-600 bg-red-50 dark:bg-red-500/10 px-3 py-2 rounded-lg">{error}</p>
       )}
+
+      <div className="rounded-xl border border-gray-200 dark:border-surface-700 bg-white dark:bg-surface-900 p-3 sm:flex sm:items-end sm:gap-3">
+        <div className="flex-1 min-w-[200px]">
+          <WarrantyDaysSelect value={warrantyDays} onChange={setWarrantyDays} />
+        </div>
+        <button
+          type="button"
+          onClick={handleSaveWarranty}
+          disabled={warrantySaving || warrantyDays === (quotation.warranty_days ?? DEFAULT_WARRANTY_DAYS)}
+          className="mt-2 sm:mt-0 shrink-0 rounded-lg bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white text-sm font-semibold px-4 py-2"
+        >
+          {warrantySaving ? <Loader2 className="w-4 h-4 animate-spin inline" /> : 'Guardar garantía'}
+        </button>
+      </div>
 
       <div className="flex flex-wrap items-center gap-2">
         <span

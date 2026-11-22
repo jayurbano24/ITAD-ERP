@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import { normalizeSerialInput, resolveSerialLookup } from '@/lib/inventario/resolveSerialLookup';
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
@@ -7,16 +8,30 @@ export async function GET(request: NextRequest) {
   if (!serie) {
     return NextResponse.json({}, { status: 200 });
   }
-  // Normalizar serie
-  serie = serie.toUpperCase().replace(/\s+/g, '');
+  const scannedAs = normalizeSerialInput(serie);
   const supabase = await createClient();
 
+  const resolved = await resolveSerialLookup(supabase, scannedAs);
+  if (!resolved) {
+    return NextResponse.json({}, { status: 200 });
+  }
+
+  serie = normalizeSerialInput(resolved.serialNumber);
+  const resolvedFrom =
+    scannedAs !== serie ? { scannedAs, matchType: resolved.matchType } : null;
+
   // Buscar en assets primero
-  let { data, error } = await supabase
-    .from('assets')
-    .select('id, current_warehouse_id, status, serial_number, internal_tag, location, updated_at, batch_id')
-    .or(`serial_number.eq.${serie},internal_tag.eq.${serie}`)
-    .maybeSingle();
+  let { data, error } = resolved.assetId
+    ? await supabase
+        .from('assets')
+        .select('id, current_warehouse_id, status, serial_number, internal_tag, location, updated_at, batch_id')
+        .eq('id', resolved.assetId)
+        .maybeSingle()
+    : await supabase
+        .from('assets')
+        .select('id, current_warehouse_id, status, serial_number, internal_tag, location, updated_at, batch_id')
+        .or(`serial_number.eq.${serie},internal_tag.eq.${serie}`)
+        .maybeSingle();
 
   let bodega = '';
   let ubicacion = '';
@@ -119,11 +134,19 @@ export async function GET(request: NextRequest) {
     }
   } else {
     // Buscar en ticket_items si no está en assets
-    const { data: ticketData } = await supabase
+    const { data: ticketRows } = await supabase
       .from('ticket_items')
       .select('warehouse_id, status, collected_serial, location, updated_at, box_number, ticket_id, asset_id')
-      .eq('collected_serial', serie)
-      .maybeSingle();
+      .ilike('collected_serial', `%${serie}`)
+      .limit(15);
+
+    const ticketData =
+      (ticketRows || []).find((r) => {
+        const sn = String(r.collected_serial || '')
+          .toUpperCase()
+          .replace(/\s+/g, '');
+        return sn === serie || sn.endsWith(serie);
+      }) ?? null;
 
     if (ticketData) {
       assetId = ticketData.asset_id;
@@ -246,7 +269,7 @@ export async function GET(request: NextRequest) {
     }
 
     return NextResponse.json({
-      serie: data.serial_number || '',
+      serie: data.serial_number || serie,
       estatus: estatusDisplay,
       bodega,
       ubicacion,
@@ -255,6 +278,7 @@ export async function GET(request: NextRequest) {
       caja: caja,
       numeroLote: numeroLote,
       ticket: ticket,
+      ...(resolvedFrom ? { resolvedFrom } : {}),
     }, { status: 200 });
   }
 

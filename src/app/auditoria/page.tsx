@@ -8,6 +8,7 @@ import { es } from 'date-fns/locale'
 
 interface EstadoActual {
   serie: string
+  resolvedFrom?: { scannedAs: string; matchType: string }
   estatus: string
   bodega: string
   ubicacion: string
@@ -111,7 +112,7 @@ export default function AuditoriaHistorialPage() {
                 value={serieInput}
                 onChange={(e) => setSerieInput(e.target.value)}
                 onKeyDown={(e) => e.key === 'Enter' && buscarPorSerie()}
-                placeholder="Ej: 3151323165510"
+                placeholder="Serie completa o sufijo (ej. PF3ADJ1H)"
                 className="flex-1 bg-[#1A1A1A] border border-surface-700 rounded-xl px-4 py-3 text-white placeholder:text-surface-500 font-medium focus:ring-2 focus:ring-indigo-500/30 focus:border-indigo-500 outline-none"
               />
               <button
@@ -141,7 +142,13 @@ export default function AuditoriaHistorialPage() {
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
                 <div>
                   <p className="text-[10px] font-bold uppercase tracking-widest text-surface-500 mb-1">Serie / IMEI</p>
-                  <p className="text-sm font-bold text-white">{estadoActual.serie || serieBusqueda}</p>
+                  <p className="text-sm font-bold text-white font-mono">{estadoActual.serie || serieBusqueda}</p>
+                  {estadoActual.resolvedFrom?.scannedAs &&
+                    estadoActual.resolvedFrom.scannedAs !== estadoActual.serie && (
+                      <p className="text-[11px] text-cyan-400/90 mt-1">
+                        Sufijo escaneado: {estadoActual.resolvedFrom.scannedAs}
+                      </p>
+                    )}
                 </div>
                 <div>
                   <p className="text-[10px] font-bold uppercase tracking-widest text-surface-500 mb-1">Estatus</p>

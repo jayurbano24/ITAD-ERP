@@ -15,6 +15,10 @@ export type SalesExcelRow = {
   subtotal: number
   taxAmount: number
   totalAmount: number
+  isWithholdingAgent: boolean
+  withholdingRate: number
+  ivaWithholdingAmount: number
+  netAfterIvaWithholding: number
   status: string
   salesRep: string
 }
@@ -52,7 +56,11 @@ const HEADERS = [
   'Detalle canal',
   'Subtotal',
   'IVA',
-  'Total',
+  'Agente retenedor SAT',
+  '% Ret. IVA',
+  'Retención IVA (Q)',
+  'Total factura (Q)',
+  'Neto a cobrar (Q)',
   'Estado',
   'Vendedor',
 ]
@@ -90,14 +98,19 @@ export async function downloadSalesHistoryExcel(
       r.channelDetail,
       r.subtotal,
       r.taxAmount,
+      r.isWithholdingAgent ? 'Sí' : 'No',
+      r.isWithholdingAgent ? r.withholdingRate : '',
+      r.ivaWithholdingAmount || '',
       r.totalAmount,
+      r.netAfterIvaWithholding,
       r.status,
       r.salesRep,
     ])
     excelRow.eachCell({ includeEmpty: true }, (cell, col) => {
       cell.font = { name: 'Calibri', size: 10 }
+      const moneyCol = col >= 10 && col <= 16 && col !== 12 && col !== 13
       cell.alignment = {
-        horizontal: col >= 10 && col <= 12 ? 'right' : col === 7 || col === 9 ? 'left' : 'center',
+        horizontal: moneyCol || col === 13 ? 'right' : col === 7 || col === 9 ? 'left' : 'center',
         vertical: 'middle',
         wrapText: col === 7 || col === 9,
       }
@@ -107,13 +120,15 @@ export async function downloadSalesHistoryExcel(
         bottom: { style: 'thin', color: { argb: 'FFB4B4B4' } },
         right: { style: 'thin', color: { argb: 'FFB4B4B4' } },
       }
-      if (col >= 10 && col <= 12) {
+      if (col === 13 && r.isWithholdingAgent) {
+        cell.numFmt = '0.00%'
+      } else if (moneyCol) {
         cell.numFmt = '"Q"#,##0.00'
       }
     })
   }
 
-  ;[14, 22, 12, 16, 18, 8, 28, 16, 28, 12, 12, 12, 12, 16].forEach((w, i) => {
+  ;[14, 22, 12, 16, 18, 8, 28, 16, 28, 12, 12, 14, 10, 14, 14, 14, 14, 12, 16].forEach((w, i) => {
     ws.getColumn(i + 1).width = w
   })
 

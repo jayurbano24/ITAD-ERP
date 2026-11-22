@@ -65,7 +65,7 @@ function ErrorMessage() {
       if (errorParam === 'LoginFailed') {
         setError(messageParam || 'Credenciales incorrectas. Verifica tu email y contraseña.')
       } else if (errorParam === 'MissingCredentials') {
-        setError('Por favor ingresa tu email y contraseña.')
+        setError('Por favor ingresa tu usuario o correo y contraseña.')
       } else {
         setError('Ocurrió un error. Intenta de nuevo.')
       }
@@ -197,16 +197,17 @@ export default function LoginPanel({ companyName, companyTagline, style }: Login
               <div className="space-y-2">
                 <label htmlFor="email" className="text-sm font-medium text-surface-300 flex items-center gap-2">
                   <Mail className="w-4 h-4" />
-                  Correo electrónico
+                  Usuario o correo electrónico
                 </label>
                 <input
                   id="email"
                   name="email"
-                  type="email"
-                  placeholder="usuario@empresa.com"
+                  type="text"
+                  placeholder="gurbano o usuario@empresa.com"
                   className="w-full bg-surface-950 border border-surface-700 rounded-xl px-4 py-3 text-white placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition-all"
                   required
-                  autoComplete="email"
+                  autoComplete="username"
+                  spellCheck={false}
                 />
               </div>
 

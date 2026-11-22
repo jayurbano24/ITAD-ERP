@@ -12,9 +12,11 @@ import {
   Loader2,
   Monitor,
   Package,
+  Percent,
   Plus,
   Search,
   Server,
+  ShieldCheck,
   ShoppingCart,
   Smartphone,
   Trash2,
@@ -38,6 +40,14 @@ import {
   printWarrantyPolicy,
   buildWarrantyPayloadFromSaleOrder,
 } from '@/lib/ventas/printWarrantyPolicy'
+import { DEFAULT_WARRANTY_DAYS, warrantyEndLabelFromBase } from '@/lib/ventas/warrantyOptions'
+import WarrantyDaysSelect from '../cotizaciones/components/WarrantyDaysSelect'
+import QuotationDiscountModal, {
+  type DiscountFormValue,
+} from '../cotizaciones/components/QuotationDiscountModal'
+import { computeQuotationTotalsWithDiscount } from '@/lib/ventas/quotationIva'
+import { computeIvaWithholding, netCollectibleTotal } from '@/lib/fiscal/ivaWithholding'
+import { isConsumidorFinalNit } from '@/lib/fiscal/nitGt'
 
 const PAYMENT_OPTIONS: { id: SalePaymentMethod; label: string }[] = [
   { id: 'efectivo', label: 'Efectivo' },
@@ -45,7 +55,8 @@ const PAYMENT_OPTIONS: { id: SalePaymentMethod; label: string }[] = [
   { id: 'visacuota', label: 'Visacuota' },
 ]
 
-const VISACUOTA_CUOTAS = [3, 6, 10, 12, 18, 24]
+/** Cuotas Visacuota (pares e impares habituales en POS). */
+const VISACUOTA_CUOTAS = [2, 3, 5, 6, 7, 9, 10, 11, 12, 15, 18, 21, 24]
 const IVA_RATE = 0.12
 
 type ServiceLine = {
@@ -129,6 +140,12 @@ export default function NuevaVentaPage() {
   const [saleNotes, setSaleNotes] = useState('')
   const [saleInvoiceNumber, setSaleInvoiceNumber] = useState('')
   const [saleSatInvoiceNumber, setSaleSatInvoiceNumber] = useState('')
+  const [withholding, setWithholding] = useState<{
+    isAgent: boolean
+    rate: number
+    legalName?: string | null
+    loading: boolean
+  }>({ isAgent: false, rate: 0.15, loading: false })
   const [saleDate, setSaleDate] = useState<Date | null>(null)
   const [isNewClientOpen, setIsNewClientOpen] = useState(false)
   const [newClientName, setNewClientName] = useState('')
@@ -137,6 +154,15 @@ export default function NuevaVentaPage() {
   const [newClientEmail, setNewClientEmail] = useState('')
   const [savingClient, setSavingClient] = useState(false)
   const [clientFormError, setClientFormError] = useState<string | null>(null)
+  const [warrantyDays, setWarrantyDays] = useState(DEFAULT_WARRANTY_DAYS)
+  const [discountPercent, setDiscountPercent] = useState(0)
+  const [discountAmount, setDiscountAmount] = useState(0)
+  const [discountNote, setDiscountNote] = useState('')
+  const [discountOpen, setDiscountOpen] = useState(false)
+
+  /** Razón social rellenada desde catálogo SAT (no sobrescribir si el usuario editó). */
+  const quickClientSatNameRef = useRef<string | null>(null)
+  const newClientSatNameRef = useRef<string | null>(null)
 
   const formatCurrency = useCallback((value: number) =>
     value
@@ -320,8 +346,6 @@ export default function NuevaVentaPage() {
   const buildWarrantyPayload = useCallback(
     (customer: Customer) => {
       const soldAt = saleDate || new Date()
-      const warrantyEnd = new Date(soldAt)
-      warrantyEnd.setDate(warrantyEnd.getDate() + 90)
       return {
         customerName: customer.commercial_name,
         taxId: customer.tax_id_nit,
@@ -329,7 +353,8 @@ export default function NuevaVentaPage() {
         email: customer.email,
         saleDate: soldAt.toLocaleDateString('es-GT'),
         deliveryDate: soldAt.toLocaleDateString('es-GT'),
-        warrantyEnd: warrantyEnd.toLocaleDateString('es-GT'),
+        warrantyEnd: warrantyEndLabelFromBase(soldAt, warrantyDays),
+        warrantyDays,
         items: cart.map((item) => ({
           manufacturer: item.asset.manufacturer || '—',
           model: item.asset.model || '—',
@@ -340,7 +365,7 @@ export default function NuevaVentaPage() {
         commentsDetail: saleNotes.trim() || null,
       }
     },
-    [cart, saleDate, saleNotes]
+    [cart, saleDate, saleNotes, warrantyDays]
   )
 
   const handlePrintWarranty = async () => {
@@ -483,13 +508,120 @@ export default function NuevaVentaPage() {
     )
   }
 
-  const subtotal = roundMoney(
+  const linesSubtotal = roundMoney(
     cart.reduce((sum, item) => sum + item.unitPrice, 0) +
       serviceLines.reduce((sum, item) => sum + item.unitPrice, 0)
   )
-  const iva = roundMoney(subtotal * IVA_RATE)
-  const totalWithIva = roundMoney(subtotal + iva)
+  const saleTotals = computeQuotationTotalsWithDiscount(linesSubtotal, false, {
+    discount_percent: discountPercent,
+    discount_amount: discountAmount,
+  })
+  const subtotal = saleTotals.subtotal
+  const iva = saleTotals.tax_amount
+  const totalWithIva = saleTotals.total
+  const discountApplied = saleTotals.discountApplied
   const lineCount = cart.length + serviceLines.length
+
+  const activeNit = !isClienteFinal
+    ? (selectedCustomer?.tax_id_nit || quickClientNit).trim()
+    : ''
+
+  useEffect(() => {
+    if (!activeNit) {
+      setWithholding((w) => ({ ...w, isAgent: false, loading: false }))
+      return
+    }
+    const timer = window.setTimeout(() => {
+      setWithholding((w) => ({ ...w, loading: true }))
+      void fetch(`/api/fiscal/sat-retenedores/check?nit=${encodeURIComponent(activeNit)}`)
+        .then((res) => res.json())
+        .then(
+          (json: {
+            isAgent?: boolean
+            withholdingRate?: number
+            legalName?: string | null
+          }) => {
+            setWithholding({
+              isAgent: Boolean(json.isAgent),
+              rate: Number(json.withholdingRate) > 0 ? Number(json.withholdingRate) : 0.15,
+              legalName: json.legalName,
+              loading: false,
+            })
+            const satName = json.legalName?.trim()
+            if (!selectedCustomer) {
+              if (satName) {
+                setQuickClientName((prev) => {
+                  const p = prev.trim()
+                  if (!p || p === quickClientSatNameRef.current) {
+                    quickClientSatNameRef.current = satName
+                    return satName
+                  }
+                  return prev
+                })
+              } else if (quickClientSatNameRef.current) {
+                setQuickClientName((prev) =>
+                  prev.trim() === quickClientSatNameRef.current ? '' : prev
+                )
+                quickClientSatNameRef.current = null
+              }
+            }
+          }
+        )
+        .catch(() => {
+          setWithholding({ isAgent: false, rate: 0.15, loading: false })
+        })
+    }, 400)
+    return () => window.clearTimeout(timer)
+  }, [activeNit, selectedCustomer])
+
+  useEffect(() => {
+    const nit = newClientNit.trim()
+    if (!nit || isConsumidorFinalNit(nit)) {
+      return
+    }
+    const timer = window.setTimeout(() => {
+      void fetch(`/api/fiscal/sat-retenedores/check?nit=${encodeURIComponent(nit)}`)
+        .then((res) => res.json())
+        .then((json: { legalName?: string | null; isAgent?: boolean }) => {
+          const satName = json.legalName?.trim()
+          if (!satName) return
+          setNewClientName((prev) => {
+            const p = prev.trim()
+            if (!p || p === newClientSatNameRef.current) {
+              newClientSatNameRef.current = satName
+              return satName
+            }
+            return prev
+          })
+        })
+        .catch(() => undefined)
+    }, 400)
+    return () => window.clearTimeout(timer)
+  }, [newClientNit])
+
+  const ivaWithholding =
+    withholding.isAgent && !isClienteFinal ? computeIvaWithholding(iva, withholding.rate) : 0
+  const netCollect =
+    withholding.isAgent && !isClienteFinal
+      ? netCollectibleTotal(totalWithIva, ivaWithholding)
+      : totalWithIva
+
+  const handleDiscountSave = (payload: DiscountFormValue) => {
+    if (payload.kind === 'clear') {
+      setDiscountPercent(0)
+      setDiscountAmount(0)
+      setDiscountNote('')
+    } else if (payload.kind === 'percent') {
+      setDiscountPercent(payload.value)
+      setDiscountAmount(0)
+      setDiscountNote(payload.note)
+    } else {
+      setDiscountAmount(payload.value)
+      setDiscountPercent(0)
+      setDiscountNote(payload.note)
+    }
+    setDiscountOpen(false)
+  }
 
   const handleProcessSale = async () => {
     if (!selectedCustomer) {
@@ -529,12 +661,15 @@ export default function NuevaVentaPage() {
           conditionGrade: null,
         })),
       ],
-      warrantyDays: 90,
+      warrantyDays,
       paymentMethod,
       installments: paymentMethod === 'visacuota' ? visacuotaCuotas : undefined,
       notes: saleNotes.trim() || undefined,
       invoiceNumber: saleInvoiceNumber.trim() || undefined,
       satInvoiceNumber: saleSatInvoiceNumber.trim() || undefined,
+      discountPercent: discountPercent > 0 ? discountPercent : undefined,
+      discountAmount: discountAmount > 0 ? discountAmount : undefined,
+      discountNote: discountNote.trim() || undefined,
     })
 
     setIsProcessing(false)
@@ -577,6 +712,11 @@ export default function NuevaVentaPage() {
     setQuickClientName('')
     setQuickClientNit('')
     setIsClienteFinal(true)
+    setWarrantyDays(DEFAULT_WARRANTY_DAYS)
+    setDiscountPercent(0)
+    setDiscountAmount(0)
+    setDiscountNote('')
+    setDiscountOpen(false)
     setPaymentMethod('efectivo')
     setVisacuotaCuotas(6)
     fetchProducts('')
@@ -830,6 +970,45 @@ export default function NuevaVentaPage() {
             </p>
           </div>
 
+          {cart.length > 0 && (
+            <div className="rounded-3xl border border-emerald-200 dark:border-emerald-500/30 bg-emerald-50/40 dark:bg-emerald-500/5 p-4 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-[10px] font-black uppercase tracking-widest text-emerald-800 dark:text-emerald-300">
+                  Equipos en carrito ({cart.length})
+                </p>
+              </div>
+              <ul className="space-y-1.5 max-h-48 overflow-y-auto">
+                {cart.map((item) => (
+                  <li
+                    key={item.asset.id}
+                    className="flex items-start justify-between gap-2 rounded-xl bg-white dark:bg-surface-900 border border-gray-100 dark:border-surface-800 px-3 py-2"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <p className="font-mono text-[11px] font-black text-emerald-600 dark:text-emerald-400 truncate">
+                        {item.asset.serial_number || item.asset.internal_tag}
+                      </p>
+                      <p className="text-[10px] font-bold text-gray-800 dark:text-surface-200 truncate">
+                        {[item.asset.manufacturer, item.asset.model].filter(Boolean).join(' · ')}
+                      </p>
+                      <p className="text-[10px] font-black tabular-nums text-gray-600 dark:text-surface-400">
+                        Q{formatCurrency(item.unitPrice)}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => removeFromCart(item.asset.id)}
+                      title="Quitar del carrito"
+                      className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-rose-200 dark:border-rose-500/40 bg-rose-50 dark:bg-rose-500/10 px-2 py-1.5 text-[9px] font-black uppercase tracking-wide text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:hover:bg-rose-500/20"
+                    >
+                      <Trash2 className="w-3 h-3" />
+                      Quitar
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
           {/* Servicios con monto */}
           <div className="rounded-3xl border-2 border-dashed border-gray-200 dark:border-surface-700 bg-white dark:bg-surface-900 p-4 space-y-3">
             <p className="text-[10px] font-black uppercase tracking-widest text-gray-500 dark:text-surface-400">
@@ -973,7 +1152,7 @@ export default function NuevaVentaPage() {
                       <th className="text-center px-6 py-5 w-[8%]">QTY</th>
                       <th className="text-left px-6 py-5 w-[26%]">Series</th>
                       <th className="text-right px-6 py-5 w-[12%]">Precio</th>
-                      <th className="text-center px-6 py-5 w-[8%]"></th>
+                      <th className="text-center px-4 py-5 w-[10%]">Quitar</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-50 dark:divide-surface-800">
@@ -998,12 +1177,15 @@ export default function NuevaVentaPage() {
                               : 'Sin IVA · +12%'}
                           </div>
                         </td>
-                        <td className="px-6 py-5 text-center">
+                        <td className="px-4 py-5 text-center">
                           <button
+                            type="button"
                             onClick={() => removeFromCart(item.asset.id)}
-                            className="p-2 text-gray-300 dark:text-surface-600 hover:text-red-500 dark:hover:text-red-400 transition-all hover:bg-red-50 dark:hover:bg-red-500/10 rounded-xl"
+                            title="Eliminar del carrito"
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-rose-200 dark:border-rose-500/40 bg-rose-50 dark:bg-rose-500/10 text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:hover:bg-rose-500/20 text-[9px] font-black uppercase tracking-wide"
                           >
-                            <Trash2 className="w-4 h-4" />
+                            <Trash2 className="w-3.5 h-3.5" />
+                            Quitar
                           </button>
                         </td>
                       </tr>
@@ -1027,12 +1209,15 @@ export default function NuevaVentaPage() {
                               : 'Sin IVA · +12%'}
                           </div>
                         </td>
-                        <td className="px-6 py-5 text-center">
+                        <td className="px-4 py-5 text-center">
                           <button
+                            type="button"
                             onClick={() => removeServiceLine(svc.id)}
-                            className="p-2 text-gray-300 dark:text-surface-600 hover:text-red-500 dark:hover:text-red-400 transition-all hover:bg-red-50 dark:hover:bg-red-500/10 rounded-xl"
+                            title="Eliminar servicio"
+                            className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-lg border border-rose-200 dark:border-rose-500/40 bg-rose-50 dark:bg-rose-500/10 text-rose-700 dark:text-rose-300 hover:bg-rose-100 dark:hover:bg-rose-500/20 text-[9px] font-black uppercase tracking-wide"
                           >
-                            <Trash2 className="w-4 h-4" />
+                            <Trash2 className="w-3.5 h-3.5" />
+                            Quitar
                           </button>
                         </td>
                       </tr>
@@ -1045,19 +1230,66 @@ export default function NuevaVentaPage() {
 
           {/* Summary Footer */}
           <div className="border-t border-gray-100 dark:border-surface-800 p-4 md:p-5 bg-white dark:bg-surface-900 shadow-[0_-12px_40px_-16px_rgba(0,0,0,0.12)] transition-all">
+            <div className="flex flex-wrap items-center justify-between gap-2 mb-3">
+              <button
+                type="button"
+                disabled={lineCount === 0}
+                onClick={() => setDiscountOpen(true)}
+                className={cn(
+                  'inline-flex items-center gap-1.5 rounded-lg px-3 py-2 text-[10px] font-black uppercase tracking-wide border transition-colors',
+                  lineCount === 0
+                    ? 'opacity-40 cursor-not-allowed border-gray-200 text-gray-400'
+                    : 'border-violet-300 dark:border-violet-500/40 bg-violet-50 dark:bg-violet-500/10 text-violet-800 dark:text-violet-200 hover:bg-violet-100 dark:hover:bg-violet-500/20'
+                )}
+              >
+                <Percent className="w-3.5 h-3.5" />
+                {discountApplied > 0 ? 'Editar descuento' : 'Descuento'}
+              </button>
+              {discountApplied > 0 && (
+                <span className="text-[10px] font-bold text-violet-700 dark:text-violet-300 tabular-nums">
+                  − Q{formatCurrency(discountApplied)}
+                  {discountNote.trim() ? ` · ${discountNote.trim()}` : ''}
+                </span>
+              )}
+            </div>
             <div className="grid grid-cols-2 gap-x-6 gap-y-2 mb-4">
               <div className="flex justify-between items-center text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-surface-500">
                 <span>Subtotal ({lineCount})</span>
                 <span className="text-gray-900 dark:text-white font-black tabular-nums text-sm">Q{formatCurrency(subtotal)}</span>
               </div>
+              {discountApplied > 0 ? (
+                <div className="flex justify-between items-center text-[10px] font-bold uppercase tracking-wider text-violet-600 dark:text-violet-400">
+                  <span>Descuento</span>
+                  <span className="font-black tabular-nums text-sm">− Q{formatCurrency(discountApplied)}</span>
+                </div>
+              ) : (
+                <div className="hidden sm:block" />
+              )}
               <div className="flex justify-between items-center text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-surface-500">
                 <span>IVA 12%</span>
                 <span className="text-emerald-600 dark:text-emerald-400 font-black tabular-nums text-sm">Q{formatCurrency(iva)}</span>
               </div>
+              {withholding.isAgent && !isClienteFinal ? (
+                <div className="flex justify-between items-center text-[10px] font-bold uppercase tracking-wider text-amber-600 dark:text-amber-400 col-span-2">
+                  <span>
+                    Retención IVA ({Math.round(withholding.rate * 100)}% del IVA)
+                  </span>
+                  <span className="font-black tabular-nums text-sm">− Q{formatCurrency(ivaWithholding)}</span>
+                </div>
+              ) : null}
               <div className="col-span-2 pt-2 border-t border-gray-100 dark:border-surface-800 flex justify-between items-center">
-                <span className="text-xl font-black text-gray-900 dark:text-white tracking-tight">Total</span>
-                <span className="text-2xl font-black text-emerald-600 dark:text-emerald-400 tabular-nums">Q{formatCurrency(totalWithIva)}</span>
+                <span className="text-xl font-black text-gray-900 dark:text-white tracking-tight">
+                  {withholding.isAgent && !isClienteFinal ? 'Total a cobrar' : 'Total'}
+                </span>
+                <span className="text-2xl font-black text-emerald-600 dark:text-emerald-400 tabular-nums">
+                  Q{formatCurrency(netCollect)}
+                </span>
               </div>
+              {withholding.isAgent && !isClienteFinal ? (
+                <p className="col-span-2 text-[10px] text-gray-500 dark:text-surface-400">
+                  Total factura Q{formatCurrency(totalWithIva)} · el agente retiene Q{formatCurrency(ivaWithholding)}
+                </p>
+              ) : null}
             </div>
 
             <div className="mb-3 space-y-2.5 rounded-xl border border-gray-200 dark:border-surface-700 bg-gray-50 dark:bg-surface-950/60 p-3">
@@ -1138,7 +1370,13 @@ export default function NuevaVentaPage() {
                   <div className="flex flex-col sm:flex-row gap-2">
                     <input
                       value={quickClientName}
-                      onChange={(e) => setQuickClientName(e.target.value)}
+                      onChange={(e) => {
+                        const v = e.target.value
+                        setQuickClientName(v)
+                        if (quickClientSatNameRef.current && v.trim() !== quickClientSatNameRef.current) {
+                          quickClientSatNameRef.current = null
+                        }
+                      }}
                       onKeyDown={(e) => {
                         if (e.key === 'Enter') {
                           e.preventDefault()
@@ -1149,12 +1387,34 @@ export default function NuevaVentaPage() {
                       className="flex-1 rounded-xl border border-gray-300 dark:border-surface-700 bg-white dark:bg-surface-950 px-3 py-2 text-sm font-bold text-gray-900 dark:text-white"
                     />
                     {!isClienteFinal && (
-                      <input
-                        value={quickClientNit}
-                        onChange={(e) => setQuickClientNit(e.target.value)}
-                        placeholder="NIT"
-                        className="sm:w-36 rounded-xl border border-gray-300 dark:border-surface-700 bg-white dark:bg-surface-950 px-3 py-2 text-sm font-bold text-gray-900 dark:text-white font-mono"
-                      />
+                      <div className="sm:w-44 space-y-1">
+                        <input
+                          value={quickClientNit}
+                          onChange={(e) => setQuickClientNit(e.target.value)}
+                          placeholder="NIT"
+                          className="w-full rounded-xl border border-gray-300 dark:border-surface-700 bg-white dark:bg-surface-950 px-3 py-2 text-sm font-bold text-gray-900 dark:text-white font-mono"
+                        />
+                        {withholding.loading && activeNit ? (
+                          <p className="text-[9px] text-gray-400 font-bold uppercase">Consultando SAT…</p>
+                        ) : withholding.isAgent ? (
+                          <div className="space-y-0.5">
+                            <p className="inline-flex items-center gap-1 text-[9px] font-black uppercase text-amber-700 dark:text-amber-300">
+                              <ShieldCheck className="w-3 h-3" />
+                              Agente retenedor
+                            </p>
+                            {withholding.legalName ? (
+                              <p
+                                className="text-[9px] font-bold text-amber-900/90 dark:text-amber-100/90 leading-tight line-clamp-2"
+                                title={withholding.legalName}
+                              >
+                                {withholding.legalName}
+                              </p>
+                            ) : null}
+                          </div>
+                        ) : activeNit ? (
+                          <p className="text-[9px] text-gray-400 font-bold uppercase">No es agente retenedor</p>
+                        ) : null}
+                      </div>
                     )}
                     <button
                       type="button"
@@ -1182,6 +1442,12 @@ export default function NuevaVentaPage() {
                     <p className="text-[10px] font-mono text-emerald-600/80 dark:text-emerald-400/70">
                       {selectedCustomer.tax_id_nit || 'CF'}
                     </p>
+                    {withholding.isAgent && !isClienteFinal ? (
+                      <p className="mt-1 inline-flex items-center gap-1 rounded-md bg-amber-500/15 px-2 py-0.5 text-[9px] font-black uppercase text-amber-800 dark:text-amber-200">
+                        <ShieldCheck className="w-3 h-3" />
+                        Agente retenedor SAT
+                      </p>
+                    ) : null}
                   </div>
                   <button
                     type="button"
@@ -1217,6 +1483,12 @@ export default function NuevaVentaPage() {
                   />
                 </div>
               </div>
+
+              <WarrantyDaysSelect
+                value={warrantyDays}
+                onChange={setWarrantyDays}
+                labelClassName="text-[9px] font-black uppercase tracking-widest text-gray-500 dark:text-surface-400"
+              />
 
               <div>
                 <p className="text-[9px] font-black uppercase tracking-widest text-gray-500 dark:text-surface-400 mb-1">
@@ -1275,7 +1547,13 @@ export default function NuevaVentaPage() {
                 <label className="mb-1 block text-[10px] font-black uppercase text-gray-800">Nombre o razón social</label>
                 <input
                   value={newClientName}
-                  onChange={(e) => setNewClientName(e.target.value)}
+                  onChange={(e) => {
+                    const v = e.target.value
+                    setNewClientName(v)
+                    if (newClientSatNameRef.current && v.trim() !== newClientSatNameRef.current) {
+                      newClientSatNameRef.current = null
+                    }
+                  }}
                   className="w-full rounded-lg border-2 border-gray-400 bg-white px-3 py-2 text-sm font-bold text-black"
                   placeholder="Ej. Empresa SA"
                 />
@@ -1327,6 +1605,16 @@ export default function NuevaVentaPage() {
           </div>
         </div>
       )}
+
+      <QuotationDiscountModal
+        open={discountOpen}
+        initialPercent={discountPercent}
+        initialAmount={discountAmount}
+        initialNote={discountNote}
+        busy={false}
+        onClose={() => setDiscountOpen(false)}
+        onSave={handleDiscountSave}
+      />
 
       {ivaPrompt && (
         <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/70 p-4">

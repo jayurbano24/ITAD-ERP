@@ -21,6 +21,7 @@ import {
   FileSpreadsheet,
   Wrench,
   Plus,
+  ClipboardList,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Text } from '@/components/ui/Text'
@@ -31,6 +32,7 @@ import ExcelColumnFilter from './ExcelColumnFilter'
 import MoveItemsModal from '@/components/MoveItemsModal'
 import DestructionModal from '@/components/DestructionModal'
 import DestructionDispatchModal from './DestructionDispatchModal'
+import { ProjectBulkDiagnosisModal } from './ProjectBulkDiagnosisModal'
 import { useToast } from '@/context/ToastContext'
 import {
   CLASSIFICATION_C_OPTIONS,
@@ -111,6 +113,7 @@ function getAssetProjectNumber(asset: { specifications?: any | null }): string |
   if (!specs || typeof specs !== 'object') return null
   const raw =
     specs.project_number ??
+    specs.source_order_number ??
     specs.project_hash ??
     specs.invoice_ref ??
     specs.Project ??
@@ -828,6 +831,7 @@ export default function WarehouseAssetTable({ sections, unified = false }: Wareh
   // Selection & Modals
   const [selectedAssetIds, setSelectedAssetIds] = useState<Set<string>>(new Set())
   const [moveModalOpen, setMoveModalOpen] = useState(false)
+  const [projectBulkSection, setProjectBulkSection] = useState<WarehouseSection | null>(null)
   const [destructionModalOpen, setDestructionModalOpen] = useState(false)
   const [destructionDispatchModalOpen, setDestructionDispatchModalOpen] = useState(false)
   const [isSelectionMode, setIsSelectionMode] = useState(false)
@@ -1683,6 +1687,18 @@ export default function WarehouseAssetTable({ sections, unified = false }: Wareh
               >
                 Costos compra
               </button>
+
+              {section.code === 'BOD-REC' ? (
+                <button
+                  type="button"
+                  onClick={() => setProjectBulkSection(section)}
+                  className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-violet-300/40 bg-violet-500/25 text-white text-xs font-semibold hover:bg-violet-500/35"
+                  title="Clasificar el restante de un ORD y enviar todo a Bodega Valorización (BOD-VAL)"
+                >
+                  <ClipboardList className="w-4 h-4" />
+                  Diagnóstico proyecto
+                </button>
+              ) : null}
 
               <button
                 onClick={handleToggleSelectionMode}
@@ -3192,6 +3208,25 @@ export default function WarehouseAssetTable({ sections, unified = false }: Wareh
           />
         )
       }
+
+      {projectBulkSection ? (
+        <ProjectBulkDiagnosisModal
+          open={Boolean(projectBulkSection)}
+          onClose={() => setProjectBulkSection(null)}
+          warehouseCode={projectBulkSection.code || 'BOD-REC'}
+          warehouseName={projectBulkSection.name || 'Bodega Recepción'}
+          assets={projectBulkSection.assets}
+          initialProjectRef={
+            columnFilters.project && columnFilters.project.size === 1
+              ? Array.from(columnFilters.project)[0]
+              : null
+          }
+          onSuccess={() => {
+            setProjectBulkSection(null)
+            window.location.reload()
+          }}
+        />
+      ) : null}
 
       <MoveItemsModal
         isOpen={moveModalOpen}

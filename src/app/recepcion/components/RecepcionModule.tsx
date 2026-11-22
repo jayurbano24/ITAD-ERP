@@ -1,16 +1,39 @@
 'use client'
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { ArrowLeft, Package, Plus, X, PackageCheck, Loader2, Trash2, ScanBarcode } from 'lucide-react'
+import {
+  ArrowLeft,
+  Package,
+  Plus,
+  X,
+  PackageCheck,
+  Loader2,
+  Trash2,
+  ScanBarcode,
+  Smartphone,
+  Link2,
+  Upload,
+} from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Text } from '@/components/ui/Text'
 import ReceptionQuickCreateTicket from './ReceptionQuickCreateTicket'
 import ReceptionConduceWorkbench from './ReceptionConduceWorkbench'
 import ReceptionPitoleoPanel, { ReceptionPitoleoModalShell } from './ReceptionPitoleoPanel'
+import { ReceptionCloseConfirmModal } from './ReceptionCloseConfirmModal'
+import {
+  ReceiptSerialMatchHint,
+  receiptInputBorderClass,
+} from './ReceiptSerialMatchHint'
+import {
+  ReceptionSerialDecisionModal,
+  type SerialDecisionPayload,
+} from './ReceptionSerialDecisionModal'
+import { normalizeSerial } from '@/lib/reception/normalizeSerial'
 import type { ReceptionServiceKind } from '@/lib/tickets/receptionService'
 
 type ReceptionUnit = {
   id: string
+  isAdditional?: boolean
   tipo: string
   tipoId: string
   marca: string
@@ -55,6 +78,24 @@ const buildProductLineKey = (unit: Pick<ReceptionUnit, 'marcaId' | 'modeloId' | 
   ]
     .join('|')
     .toLowerCase()
+
+const computeReceptionCloseSummary = (
+  units: ReceptionUnit[],
+  ticketLabel: string,
+  receiptAttachmentUrl?: string | null
+) => {
+  const expected = units.filter((u) => !u.isAdditional)
+  const additional = units.filter((u) => u.isAdditional)
+  return {
+    ticketLabel,
+    expectedFromReceipt: expected.length,
+    scanned: units.filter((u) => (u.serie || '').trim()).length,
+    missingExpected: expected.filter((u) => !(u.serie || '').trim()).length,
+    additionalReceived: additional.filter((u) => (u.serie || '').trim()).length,
+    additionalEmpty: additional.filter((u) => !(u.serie || '').trim()).length,
+    receiptAttachmentUrl: receiptAttachmentUrl ?? null,
+  }
+}
 
 const groupUnitsIntoLines = (units: ReceptionUnit[]): ProductLine[] => {
   const map = new Map<string, ProductLine>()
@@ -181,10 +222,28 @@ const RecepcionModule = () => {
   const [serialInput, setSerialInput] = useState('')
   const [addingSerial, setAddingSerial] = useState(false)
   const [completingTicket, setCompletingTicket] = useState(false)
+  const [syncingReceiptSerials, setSyncingReceiptSerials] = useState(false)
+  const [uploadingReceiptManifest, setUploadingReceiptManifest] = useState(false)
+  const [receiptSerialSyncInfo, setReceiptSerialSyncInfo] = useState<string | null>(null)
+  const receiptManifestInputRef = useRef<HTMLInputElement>(null)
+  const [serialDecision, setSerialDecision] = useState<{
+    scanned: string
+    expected: string
+  } | null>(null)
+  const [serialDecisionBusy, setSerialDecisionBusy] = useState(false)
+  const [closeModalOpen, setCloseModalOpen] = useState(false)
+  const [closeMissingNotes, setCloseMissingNotes] = useState('')
+  const [closeAdditionalNotes, setCloseAdditionalNotes] = useState('')
+  const [closeGeneralNotes, setCloseGeneralNotes] = useState('')
+  const [bulkPasteOpen, setBulkPasteOpen] = useState(false)
+  const [bulkPasteText, setBulkPasteText] = useState('')
+  const [bulkImporting, setBulkImporting] = useState(false)
+  const [bulkImportSummary, setBulkImportSummary] = useState<string | null>(null)
   const [deletingTicketId, setDeletingTicketId] = useState<string | null>(null)
   const [serialError, setSerialError] = useState<string | null>(null)
   const serialInputRef = useRef<HTMLInputElement>(null)
   const pitoleoPanelRef = useRef<HTMLDivElement>(null)
+  const bulkExcelInputRef = useRef<HTMLInputElement>(null)
   const [postVentaPitoleoOpen, setPostVentaPitoleoOpen] = useState(false)
   const [pendingPitoleoLineKey, setPendingPitoleoLineKey] = useState<string | null>(null)
   const [savingLineQuantityKey, setSavingLineQuantityKey] = useState<string | null>(null)
@@ -519,8 +578,8 @@ const RecepcionModule = () => {
           marcaId: item.brand_id || '',
           modelo: (item.model_full || item.model || 'Sin modelo').toString(),
           modeloId: item.model_id || '',
-          serie: item.collected_serial || item.expected_serial || '',
-          expectedSerial: item.expected_serial || '',
+          serie: item.collected_serial || '',
+          expectedSerial: (item.expected_serial || '').trim() || undefined,
           color: item.color_detail || item.color || '',
           tamanoPantalla: '',
           procesador: item.processor || '',
@@ -532,6 +591,7 @@ const RecepcionModule = () => {
           versionTeclado: item.keyboard_version || '',
           classified: !!(item.classification_f && item.classification_c),
           classification: item.classification_f && item.classification_c ? `${item.classification_f}-${item.classification_c}` : '',
+          isAdditional: Boolean(item.is_additional),
           details: {}
         })),
         receptionCode: box.boxReceptionCode || undefined
@@ -642,10 +702,31 @@ const RecepcionModule = () => {
     [pitoleoBox]
   )
 
+  const closeTargetUnits = useMemo(() => {
+    const box = pitoleoBox ?? activeBoxDetails
+    return (box?.units || []) as ReceptionUnit[]
+  }, [pitoleoBox, activeBoxDetails])
+
   const pitoleoAllSeriesComplete = useMemo(() => {
-    const units = (pitoleoBox?.units || []) as ReceptionUnit[]
-    return units.length > 0 && units.every((u) => !!(u.serie || '').trim())
-  }, [pitoleoBox])
+    const expected = closeTargetUnits.filter((u) => !u.isAdditional)
+    return expected.length > 0 && expected.every((u) => !!(u.serie || '').trim())
+  }, [closeTargetUnits])
+
+  const pitoleoCanComplete = useMemo(() => {
+    return closeTargetUnits.some((u) => !!(u.serie || '').trim())
+  }, [closeTargetUnits])
+
+  const receptionCloseSummary = useMemo(() => {
+    if (!ticketInfo && !activeBoxDetails?.ticket) {
+      return null
+    }
+    const label = ticketInfo?.readableId || activeBoxDetails?.ticket || 'Ticket'
+    return computeReceptionCloseSummary(
+      closeTargetUnits,
+      label,
+      ticketInfo?.attachmentUrl || null
+    )
+  }, [closeTargetUnits, ticketInfo, activeBoxDetails])
 
   const activeProductLine = useMemo(
     () => productLines.find((line) => line.key === activeProductLineKey) || null,
@@ -728,10 +809,163 @@ const RecepcionModule = () => {
     })
   }
 
+  const needsReceiptSerialSync = useMemo(() => {
+    const units = closeTargetUnits.filter((u) => !u.isAdditional)
+    if (units.length === 0) return false
+  return units.some((u) => !(u.expectedSerial || '').trim())
+  }, [closeTargetUnits])
+
+  const handleSyncReceiptSerials = async () => {
+    const box = pitoleoBox ?? activeBoxDetails
+    if (!box?.ticketId) return
+    if (!ticketInfo?.attachmentUrl) {
+      setSerialError('Suba el Receipt of Equipment (PDF, foto o Excel) antes de extraer series.')
+      return
+    }
+    setSyncingReceiptSerials(true)
+    setReceiptSerialSyncInfo(null)
+    setSerialError(null)
+    try {
+      const response = await fetch(`/api/tickets/${box.ticketId}/receipt-serials-sync`, {
+        method: 'POST',
+        credentials: 'include',
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        setSerialError(payload.error || 'No se pudieron cargar las series del recibo')
+        return
+      }
+      const list = (payload.detectedItems as Array<{ serial?: string | null }> | undefined)
+        ?.map((i) => i.serial)
+        .filter(Boolean)
+        .join(', ')
+      setReceiptSerialSyncInfo(
+        `Series del Receipt cargadas (${payload.updated ?? 0} cupo(s))${list ? `: ${list}` : ''}`
+      )
+      await refreshActiveTicketBoxes()
+    } catch {
+      setSerialError('Error de red al sincronizar series del recibo')
+    } finally {
+      setSyncingReceiptSerials(false)
+    }
+  }
+
+  const handleReceiptManifestUpload = async (file: File) => {
+    const ticketId = ticketInfo?.id ?? (pitoleoBox ?? activeBoxDetails)?.ticketId
+    if (!ticketId) {
+      setBoxesError('Cargue el ticket antes de subir el Receipt of Equipment.')
+      return
+    }
+    await handleReceiptManifestUploadForTicket(ticketId, file)
+  }
+
+  const handleReceiptManifestUploadForTicket = async (ticketId: string, file: File) => {
+    setUploadingReceiptManifest(true)
+    setBoxesError(null)
+    setReceiptSerialSyncInfo(null)
+    setSerialError(null)
+    try {
+      const fd = new FormData()
+      fd.set('receipt', file)
+      const response = await fetch(`/api/tickets/${ticketId}/receipt-manifest`, {
+        method: 'POST',
+        body: fd,
+        credentials: 'include',
+      })
+      const payload = (await response.json().catch(() => null)) as {
+        error?: string
+        insertedSlots?: number
+        attachment_url?: string
+      } | null
+      if (!response.ok || !payload) {
+        setBoxesError(payload?.error || 'No se pudo subir el Receipt of Equipment')
+        return
+      }
+      setTicketInfo((prev) =>
+        prev
+          ? {
+              ...prev,
+              id: ticketId,
+              attachmentUrl: payload.attachment_url ?? prev.attachmentUrl ?? null,
+            }
+          : prev
+      )
+      const slots = payload.insertedSlots ?? 0
+      setReceiptSerialSyncInfo(
+        slots > 0
+          ? `Receipt of Equipment cargado: ${slots} cupo(s) para pistoleo.`
+          : 'Receipt of Equipment guardado.'
+      )
+      await refreshActiveTicketBoxes()
+    } catch {
+      setBoxesError('Error de red al subir Receipt of Equipment')
+    } finally {
+      setUploadingReceiptManifest(false)
+      if (receiptManifestInputRef.current) {
+        receiptManifestInputRef.current.value = ''
+      }
+    }
+  }
+
+  const postSerialScan = async (options?: {
+    allowReceiptMismatch?: boolean
+    mismatchJustification?: string
+    action?: 'scan' | 'reassign'
+    targetItemId?: string
+  }) => {
+    const box = pitoleoBox ?? activeBoxDetails
+    if (!box || !activeProductLine) return
+    const serial = normalizeSerial(serialInput)
+    if (!serial) {
+      setSerialError('Escanea o escribe una serie')
+      return
+    }
+
+    setAddingSerial(true)
+    setSerialError(null)
+    try {
+      const response = await fetch('/api/recepcion/serials', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: options?.action || 'scan',
+          ticketId: box.ticketId,
+          templateItemId: activeProductLine.templateItemId,
+          targetItemId: options?.targetItemId,
+          serial,
+          source: 'desktop',
+          allowReceiptMismatch: Boolean(options?.allowReceiptMismatch),
+          mismatchJustification: options?.mismatchJustification,
+        }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        if (payload.code === 'RECEIPT_SERIAL_MISMATCH' && payload.expectedSerial) {
+          setSerialDecision({
+            scanned: serial,
+            expected: payload.expectedSerial as string,
+          })
+        } else {
+          setSerialError(payload.error || 'No se pudo agregar la serie')
+        }
+        return
+      }
+
+      setSerialInput('')
+      setSerialDecision(null)
+      await refreshActiveTicketBoxes()
+      setTimeout(() => serialInputRef.current?.focus(), 150)
+    } catch {
+      setSerialError('Error de red al agregar serie')
+    } finally {
+      setAddingSerial(false)
+    }
+  }
+
   const handleAddSerialToLine = async () => {
     const box = pitoleoBox ?? activeBoxDetails
     if (!box || !activeProductLine) return
-    const serial = serialInput.trim().toUpperCase()
+    const serial = normalizeSerial(serialInput)
     if (!serial) {
       setSerialError('Escanea o escribe una serie')
       return
@@ -744,40 +978,69 @@ const RecepcionModule = () => {
       return
     }
 
-    const duplicate = activeProductLine.units.some(
-      (u) => (u.serie || '').trim().toUpperCase() === serial
-    )
+    const duplicate = activeProductLine.units.some((u) => normalizeSerial(u.serie) === serial)
     if (duplicate) {
       setSerialError(`La serie ${serial} ya está en esta línea`)
       return
     }
 
-    setAddingSerial(true)
-    setSerialError(null)
-    try {
-      const response = await fetch('/api/recepcion/serials', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          action: 'scan',
-          ticketId: box.ticketId,
-          templateItemId: activeProductLine.templateItemId,
-          serial,
-        }),
-      })
-      const payload = await response.json().catch(() => ({}))
-      if (!response.ok) {
-        setSerialError(payload.error || 'No se pudo agregar la serie')
-        return
-      }
+    const nextPending = activeProductLine.units.find(
+      (u) => !(u.serie || '').trim() && !u.isAdditional
+    )
+    const expectedReceipt = normalizeSerial(nextPending?.expectedSerial)
+    if (expectedReceipt && expectedReceipt !== serial) {
+      setSerialDecision({ scanned: serial, expected: expectedReceipt })
+      return
+    }
 
+    await postSerialScan()
+  }
+
+  const handleSerialDecision = async (payload: SerialDecisionPayload) => {
+    if (payload.action === 'retry') {
+      setSerialDecision(null)
       setSerialInput('')
-      await refreshActiveTicketBoxes()
-      setTimeout(() => serialInputRef.current?.focus(), 150)
-    } catch {
-      setSerialError('Error de red al agregar serie')
+      serialInputRef.current?.focus()
+      return
+    }
+
+    setSerialDecisionBusy(true)
+    try {
+      if (payload.action === 'accept_mismatch') {
+        await postSerialScan({
+          allowReceiptMismatch: true,
+          mismatchJustification: payload.justification,
+        })
+      } else if (payload.action === 'reassign') {
+        await postSerialScan({
+          action: 'reassign',
+          targetItemId: payload.targetItemId,
+          mismatchJustification: payload.justification,
+        })
+      } else if (payload.action === 'register_additional') {
+        const box = pitoleoBox ?? activeBoxDetails
+        if (!box || !activeProductLine) return
+        const response = await fetch('/api/recepcion/serials', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            action: 'additional',
+            ticketId: box.ticketId,
+            templateItemId: activeProductLine.templateItemId,
+            additionalNote: payload.justification,
+          }),
+        })
+        if (!response.ok) {
+          const data = await response.json().catch(() => ({}))
+          setSerialError(data.error || 'No se pudo crear cupo adicional')
+          return
+        }
+        await refreshActiveTicketBoxes()
+        setSerialDecision(null)
+        await postSerialScan()
+      }
     } finally {
-      setAddingSerial(false)
+      setSerialDecisionBusy(false)
     }
   }
 
@@ -862,7 +1125,125 @@ const RecepcionModule = () => {
     }
   }
 
-  const handleCompleteTicket = async () => {
+  const finishBulkImport = async (
+    payload: {
+      applied?: number
+      totalRows?: number
+      remainingWithoutSerial?: number | null
+      readyToComplete?: boolean
+      errors?: unknown[]
+      unmapped?: unknown[]
+    },
+    box: { ticket: string; ticketId: string; id?: string }
+  ) => {
+    const errCount = Array.isArray(payload.errors) ? payload.errors.length : 0
+    const unmapped = Array.isArray(payload.unmapped) ? payload.unmapped.length : 0
+    setBulkImportSummary(
+      `Importadas ${payload.applied ?? 0} de ${payload.totalRows ?? 0}. Sin serie: ${payload.remainingWithoutSerial ?? '?'}.` +
+        (errCount ? ` Errores: ${errCount}.` : '') +
+        (unmapped ? ` Sin mapeo: ${unmapped} (revise Make/Model en Excel).` : '')
+    )
+    if (unmapped > 0 && Array.isArray((payload as { unmapped?: { serial: string; make: string; model: string }[] }).unmapped)) {
+      const sample = (payload as { unmapped: { serial: string; make: string; model: string }[] }).unmapped.slice(0, 3)
+      console.warn('Series sin línea en ticket:', sample)
+    }
+    await loadBoxesForTicket(box.ticket, {
+      keepModalOpen: true,
+      preferredBoxId: box.id,
+    })
+    if (payload.readyToComplete) {
+      const go = confirm(
+        `Series completas (${payload.applied ?? 0}/${payload.totalRows ?? 0}). ¿Cerrar ${box.ticket} y enviar a Bodega Recepción?`
+      )
+      if (!go) return
+      const response = await fetch('/api/recepcion/complete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ticketId: box.ticketId }),
+      })
+      const completePayload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        alert(completePayload.error || 'No se pudo completar el ticket')
+        return
+      }
+      alert(`✓ Ticket ${box.ticket} completado en Bodega Recepción.`)
+      setActiveBoxDetails(null)
+      setBoxes([])
+      setTicketInfo(null)
+      setTicketSearchTerm('')
+      await reloadAvailableTickets()
+    }
+  }
+
+  const handleBulkExcelFile = async (file: File, box: { ticket: string; ticketId: string; id?: string }) => {
+    setBulkImporting(true)
+    setBulkImportSummary(null)
+    try {
+      const form = new FormData()
+      form.set('file', file)
+      form.set('ticketId', box.ticketId)
+      form.set('completeTicket', 'true')
+      const response = await fetch('/api/recepcion/serials/bulk/upload', {
+        method: 'POST',
+        body: form,
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        alert(payload.error || 'No se pudo importar el Excel')
+        return
+      }
+      await finishBulkImport(payload, box)
+    } catch {
+      alert('Error de red al subir Excel')
+    } finally {
+      setBulkImporting(false)
+    }
+  }
+
+  const handleBulkImportPaste = async () => {
+    const box = pitoleoBox ?? activeBoxDetails
+    if (!box?.ticketId || !bulkPasteText.trim()) {
+      alert('Pegue el listado con columnas Make, Model y Serial Number')
+      return
+    }
+    const ok = confirm(
+      '¿Importar todas las series del pegado? Se asignarán por marca/modelo a las líneas del ticket.'
+    )
+    if (!ok) return
+
+    setBulkImporting(true)
+    setBulkImportSummary(null)
+    try {
+      const response = await fetch('/api/recepcion/serials/bulk', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ticketId: box.ticketId,
+          ticketReadableId: box.ticket,
+          paste: bulkPasteText,
+        }),
+      })
+      const payload = await response.json().catch(() => ({}))
+      if (!response.ok) {
+        alert(payload.error || 'No se pudo importar')
+        return
+      }
+      if (Array.isArray(payload.errors) && payload.errors.length > 0) {
+        console.warn('Bulk import errors', payload.errors)
+      }
+      await finishBulkImport(payload, {
+        ticket: box.ticket,
+        ticketId: box.ticketId,
+        id: box.id,
+      })
+    } catch {
+      alert('Error de red al importar series')
+    } finally {
+      setBulkImporting(false)
+    }
+  }
+
+  const handleCompleteTicket = () => {
     const box = pitoleoBox ?? activeBoxDetails
     if (!box?.ticketId) return
 
@@ -872,14 +1253,21 @@ const RecepcionModule = () => {
       return
     }
 
-    const missingSerial = units.filter((u) => !(u.serie || '').trim()).length
-    if (missingSerial > 0) {
-      alert(`Faltan ${missingSerial} serie(s). Completa el pitoleo antes de guardar.`)
+    const scanned = units.filter((u) => (u.serie || '').trim()).length
+    if (scanned === 0) {
+      alert('Registre al menos una serie antes de completar.')
       return
     }
 
-    const ok = confirm('¿Completar el ticket y enviar los equipos a Bodega Recepción?')
-    if (!ok) return
+    setCloseMissingNotes('')
+    setCloseAdditionalNotes('')
+    setCloseGeneralNotes('')
+    setCloseModalOpen(true)
+  }
+
+  const confirmCloseReception = async () => {
+    const box = pitoleoBox ?? activeBoxDetails
+    if (!box?.ticketId) return
 
     setCompletingTicket(true)
     try {
@@ -888,6 +1276,10 @@ const RecepcionModule = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           ticketId: box.ticketId,
+          allowPartial: true,
+          missingNotes: closeMissingNotes,
+          additionalNotes: closeAdditionalNotes,
+          generalNotes: closeGeneralNotes,
         }),
       })
       const payload = await response.json().catch(() => ({}))
@@ -901,6 +1293,7 @@ const RecepcionModule = () => {
       alert(
         `✓ Ticket ${box.ticket} completado\n${moved} equipo(s) enviados a ${warehouseLabel}`
       )
+      setCloseModalOpen(false)
       setActiveBoxDetails(null)
       setActiveUnitForReception(null)
       setActiveProductLineKey(null)
@@ -1263,6 +1656,38 @@ const RecepcionModule = () => {
   const isPostVentaFlow =
     receptionServiceKind === 'post_venta' || ticketInfo?.ticketType === 'garantia'
 
+  /** Caja logística (>0) o equipos precargados del ticket (caja 0) */
+  const showPitoleoModal =
+    !!activeBoxDetails &&
+    (Number(activeBoxDetails.boxNumber) > 0 || activeBoxDetails.source === 'ticket')
+
+  const mobileCapturePath = ticketInfo?.readableId
+    ? `/recepcion/movil?tk=${encodeURIComponent(ticketInfo.readableId)}`
+    : ''
+
+  useEffect(() => {
+    if (!showPitoleoModal || !ticketInfo?.readableId) return
+    const id = window.setInterval(() => {
+      void loadBoxesForTicket(ticketInfo.readableId, {
+        keepModalOpen: true,
+        preferredBoxId: activeBoxDetails?.id,
+      })
+    }, 6000)
+    return () => window.clearInterval(id)
+  }, [showPitoleoModal, ticketInfo?.readableId, activeBoxDetails?.id])
+
+  const copyMobileCaptureLink = async () => {
+    if (!mobileCapturePath) return
+    const full =
+      typeof window !== 'undefined' ? `${window.location.origin}${mobileCapturePath}` : mobileCapturePath
+    try {
+      await navigator.clipboard.writeText(full)
+      alert('Enlace copiado. Ábrelo en los teléfonos del equipo.')
+    } catch {
+      prompt('Copie este enlace para captura móvil:', full)
+    }
+  }
+
   const handleServiceKindChange = useCallback((kind: ReceptionServiceKind) => {
     setReceptionServiceKind(kind)
     if (kind === 'post_venta') {
@@ -1502,16 +1927,30 @@ const RecepcionModule = () => {
               </>
             )}
             <div className="ml-auto flex flex-wrap items-center gap-2">
-              {ticketInfo.attachmentUrl ? (
-                <a
-                  href={ticketInfo.attachmentUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-emerald-600 text-white hover:bg-emerald-500"
-                >
-                  Ver recibo
-                </a>
-              ) : null}
+              <input
+                ref={receiptManifestInputRef}
+                type="file"
+                accept="image/*,.pdf,.xlsx,.xls,.csv"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0]
+                  if (f) void handleReceiptManifestUpload(f)
+                }}
+              />
+              <button
+                type="button"
+                disabled={uploadingReceiptManifest}
+                onClick={() => receiptManifestInputRef.current?.click()}
+                className="inline-flex items-center gap-2 px-4 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest bg-emerald-600 text-white hover:bg-emerald-500 disabled:opacity-50"
+                title="PDF, foto o Excel del cliente (XSi)"
+              >
+                {uploadingReceiptManifest ? (
+                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Upload className="w-3.5 h-3.5" />
+                )}
+                Subir Receipt of Equipment
+              </button>
               <button
                 type="button"
                 disabled={Boolean(deletingTicketId)}
@@ -1563,8 +2002,9 @@ const RecepcionModule = () => {
               inputsDisabled={!!activeBoxLabel}
               showCompleteFooter
               allSeriesComplete={pitoleoAllSeriesComplete}
+              canCompleteTicket={pitoleoCanComplete}
               completingTicket={completingTicket}
-              onCompleteTicket={() => void handleCompleteTicket()}
+              onCompleteTicket={handleCompleteTicket}
             />
             <ReceptionPitoleoModalShell
               open={postVentaPitoleoOpen && Boolean(activeProductLine)}
@@ -1588,6 +2028,8 @@ const RecepcionModule = () => {
                     units: activeProductLine.units.map((u) => ({
                       id: u.id,
                       serie: u.serie,
+                      expectedSerial: u.expectedSerial,
+                      isAdditional: u.isAdditional,
                     })),
                   }}
                   serialInput={serialInput}
@@ -1618,6 +2060,25 @@ const RecepcionModule = () => {
 
         {!isPostVentaFlow ? (
         <>
+        <input
+          ref={bulkExcelInputRef}
+          type="file"
+          accept=".xlsx,.xls,.csv"
+          className="hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0]
+            const targetId = bulkExcelInputRef.current?.dataset.ticketId
+            const targetReadable = bulkExcelInputRef.current?.dataset.ticketReadable
+            const targetBoxId = bulkExcelInputRef.current?.dataset.boxId
+            e.target.value = ''
+            if (!file || !targetId || !targetReadable) return
+            void handleBulkExcelFile(file, {
+              ticketId: targetId,
+              ticket: targetReadable,
+              id: targetBoxId,
+            })
+          }}
+        />
         <div className="flex p-2 bg-gray-100/50 dark:bg-surface-950 rounded-[2rem] gap-2 border border-gray-100 dark:border-surface-800 shadow-inner mb-8 w-fit">
           <button
             onClick={() => setFilterStatus('all')}
@@ -1703,24 +2164,37 @@ const RecepcionModule = () => {
                   </div>
                 </div>
 
-                <div className="mt-8 flex gap-3">
+                <div className="mt-8 flex flex-wrap gap-3">
+                  {(box.source === 'ticket' || Number(box.boxNumber) === 0) && !isCompleted ? (
+                    <button
+                      type="button"
+                      disabled={bulkImporting}
+                      onClick={() => {
+                        if (!bulkExcelInputRef.current) return
+                        bulkExcelInputRef.current.dataset.ticketId = box.ticketId
+                        bulkExcelInputRef.current.dataset.ticketReadable = box.ticket
+                        bulkExcelInputRef.current.dataset.boxId = box.id
+                        bulkExcelInputRef.current.click()
+                      }}
+                      className="w-full sm:w-auto px-5 py-4 rounded-2xl bg-indigo-600 text-white text-[10px] font-black uppercase tracking-widest hover:bg-indigo-500 disabled:opacity-50 flex items-center justify-center gap-2"
+                    >
+                      {bulkImporting ? (
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                      ) : (
+                        <Upload className="w-4 h-4" />
+                      )}
+                      Subir Excel ITAD
+                    </button>
+                  ) : null}
                   <button
                     onClick={() => {
                       if (isCompleted) {
                         alert('No se puede editar. Esta caja ya fue completada.')
                         return
                       }
-                      if (box.source === 'ticket' || box.boxNumber === 0) {
-                        setActiveBoxDetails(box)
-                        const lines = groupUnitsIntoLines((box.units || []) as ReceptionUnit[])
-                        if (lines[0]) selectProductLine(lines[0])
-                        document.getElementById('pitoleo-workbench')?.scrollIntoView({
-                          behavior: 'smooth',
-                          block: 'start',
-                        })
-                        return
-                      }
-                      openBoxDetails(box)
+                      setActiveBoxDetails(box)
+                      const lines = groupUnitsIntoLines((box.units || []) as ReceptionUnit[])
+                      if (lines[0]) selectProductLine(lines[0])
                     }}
                     disabled={isCompleted}
                     className={`flex-1 px-6 py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest transition-all active:scale-95 ${isCompleted
@@ -1728,9 +2202,11 @@ const RecepcionModule = () => {
                       : 'bg-gray-100 dark:bg-surface-800 text-gray-900 dark:text-white hover:bg-gray-200 dark:hover:bg-surface-700'
                       }`}
                   >
-                    Ver detalles
+                    {(box.source === 'ticket' || box.boxNumber === 0) && withSerial < (box.units?.length || 0)
+                      ? 'Capturar series'
+                      : 'Ver detalles'}
                   </button>
-                  {!isCompleted && (
+                  {!isCompleted && (box.source !== 'ticket' && Number(box.boxNumber) !== 0) ? (
                     <button
                       onClick={() => {
                         setActiveBoxDetails(box)
@@ -1740,7 +2216,15 @@ const RecepcionModule = () => {
                     >
                       Bodega
                     </button>
-                  )}
+                  ) : null}
+                  {!isCompleted && (box.source === 'ticket' || Number(box.boxNumber) === 0) && box.receptionCode ? (
+                    <span
+                      className="px-4 py-3 rounded-2xl bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[9px] font-black uppercase tracking-widest whitespace-nowrap self-center"
+                      title="Pre-recepción en BOD-REC; complete el pistoleo y pulse Completar en el modal"
+                    >
+                      En BOD-REC · {box.receptionCode}
+                    </span>
+                  ) : null}
                   <button
                     onClick={(e) => {
                       e.stopPropagation()
@@ -1760,7 +2244,7 @@ const RecepcionModule = () => {
         </>
         ) : null}
 
-        {activeBoxDetails && activeBoxDetails.boxNumber > 0 && (
+        {showPitoleoModal && (
           <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6 md:p-10">
             <div
               className="absolute inset-0 bg-gray-900/60 dark:bg-black/80 backdrop-blur-xl animate-in fade-in duration-500"
@@ -1789,9 +2273,9 @@ const RecepcionModule = () => {
                 </div>
 
                 <div className="flex items-center gap-2 flex-wrap justify-end">
-                  {((activeBoxDetails.units || []) as ReceptionUnit[]).every((u) => !!(u.serie || '').trim()) ? (
+                  {pitoleoAllSeriesComplete ? (
                     <span className="px-2.5 py-1 rounded-full bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 text-[9px] font-black uppercase tracking-widest">
-                      Series listas
+                      Recibo completo
                     </span>
                   ) : (
                     <span className="px-2.5 py-1 rounded-full bg-amber-500/10 text-amber-600 dark:text-amber-400 text-[9px] font-black uppercase tracking-widest">
@@ -1800,11 +2284,54 @@ const RecepcionModule = () => {
                   )}
                   <button
                     type="button"
-                    onClick={() => void handleCompleteTicket()}
-                    disabled={
-                      completingTicket ||
-                      !(activeBoxDetails.units || []).every((u: ReceptionUnit) => !!(u.serie || '').trim())
-                    }
+                    disabled={uploadingReceiptManifest}
+                    onClick={() => receiptManifestInputRef.current?.click()}
+                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-xl font-black uppercase tracking-widest text-[10px] border border-emerald-500/40 text-white bg-emerald-700 hover:bg-emerald-600 disabled:opacity-50"
+                    title="PDF, foto o Excel del Receipt of Equipment"
+                  >
+                    {uploadingReceiptManifest ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    ) : (
+                      <Upload className="w-3.5 h-3.5" />
+                    )}
+                    Subir Receipt of Equipment
+                  </button>
+                  {needsReceiptSerialSync && ticketInfo?.attachmentUrl ? (
+                    <button
+                      type="button"
+                      disabled={syncingReceiptSerials}
+                      onClick={() => void handleSyncReceiptSerials()}
+                      className="px-3 py-2 rounded-xl font-black uppercase tracking-widest text-[10px] border border-purple-500/40 text-white bg-purple-700 hover:bg-purple-600 disabled:opacity-50"
+                    >
+                      {syncingReceiptSerials ? 'Leyendo Receipt…' : 'Series del Receipt'}
+                    </button>
+                  ) : null}
+                  {mobileCapturePath ? (
+                    <>
+                      <a
+                        href={mobileCapturePath}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-3 py-2 rounded-xl font-black uppercase tracking-widest text-[10px] border border-cyan-500/40 text-cyan-700 dark:text-cyan-300 hover:bg-cyan-500/10 flex items-center gap-1.5"
+                        title="Abrir captura en teléfono"
+                      >
+                        <Smartphone className="w-3.5 h-3.5" />
+                        Móvil
+                      </a>
+                      <button
+                        type="button"
+                        onClick={() => void copyMobileCaptureLink()}
+                        className="p-2 rounded-xl border border-gray-200 dark:border-surface-700 text-gray-500 hover:text-cyan-600"
+                        title="Copiar enlace para varios operadores"
+                      >
+                        <Link2 className="w-4 h-4" />
+                      </button>
+                    </>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={handleCompleteTicket}
+                    disabled={completingTicket || !pitoleoCanComplete}
                     className="px-3 py-2 rounded-xl font-black uppercase tracking-widest text-[10px] text-white bg-indigo-600 hover:bg-indigo-500 transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-1.5"
                     title="Completa y envía a Bodega Recepción"
                   >
@@ -1840,10 +2367,64 @@ const RecepcionModule = () => {
                         Listado de equipos del conduce
                       </p>
                     </div>
-                    <span className="text-[9px] font-black uppercase tracking-widest text-gray-500 dark:text-surface-400">
-                      {productLines.length} ítem(s)
-                    </span>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setBulkPasteOpen((v) => !v)}
+                        className="px-2.5 py-1.5 rounded-lg border border-indigo-500/40 text-[9px] font-black uppercase tracking-widest text-indigo-600 dark:text-indigo-300 hover:bg-indigo-500/10"
+                      >
+                        {bulkPasteOpen ? 'Ocultar' : 'Pegar Excel / informe'}
+                      </button>
+                      <span className="text-[9px] font-black uppercase tracking-widest text-gray-500 dark:text-surface-400">
+                        {productLines.length} ítem(s)
+                      </span>
+                    </div>
                   </div>
+
+                  {bulkPasteOpen ? (
+                    <div className="rounded-2xl border border-indigo-500/30 bg-indigo-500/5 p-4 space-y-3">
+                      <p className="text-[10px] font-bold text-gray-600 dark:text-gray-300 leading-snug">
+                        Suba el archivo <strong>.xlsx</strong> del informe ITAD o pegue las filas (columnas{' '}
+                        <strong>Make</strong>, <strong>Model</strong>, <strong>Serial Number</strong>).
+                      </p>
+                      <button
+                        type="button"
+                        disabled={bulkImporting}
+                        onClick={() => {
+                          const box = activeBoxDetails
+                          if (!box?.ticketId || !bulkExcelInputRef.current) return
+                          bulkExcelInputRef.current.dataset.ticketId = box.ticketId
+                          bulkExcelInputRef.current.dataset.ticketReadable = box.ticket
+                          bulkExcelInputRef.current.dataset.boxId = box.id
+                          bulkExcelInputRef.current.click()
+                        }}
+                        className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-indigo-600 text-white text-[10px] font-black uppercase tracking-widest disabled:opacity-50"
+                      >
+                        <Upload className="w-4 h-4" />
+                        Elegir archivo Excel
+                      </button>
+                      <textarea
+                        value={bulkPasteText}
+                        onChange={(e) => setBulkPasteText(e.target.value)}
+                        rows={8}
+                        placeholder="Pegue aquí las filas del informe…"
+                        className="w-full rounded-xl border border-gray-200 dark:border-surface-700 bg-white dark:bg-surface-950 px-3 py-2 text-xs font-mono text-gray-900 dark:text-gray-100"
+                      />
+                      <div className="flex flex-wrap gap-2 items-center">
+                        <button
+                          type="button"
+                          disabled={bulkImporting || !bulkPasteText.trim()}
+                          onClick={() => void handleBulkImportPaste()}
+                          className="px-4 py-2 rounded-xl bg-indigo-600 text-white text-[10px] font-black uppercase tracking-widest disabled:opacity-50"
+                        >
+                          {bulkImporting ? 'Importando…' : 'Importar series'}
+                        </button>
+                        {bulkImportSummary ? (
+                          <p className="text-[10px] font-bold text-emerald-600 dark:text-emerald-400">{bulkImportSummary}</p>
+                        ) : null}
+                      </div>
+                    </div>
+                  ) : null}
 
                   {productLines.length === 0 ? (
                     <div className="rounded-2xl border border-dashed border-gray-200 dark:border-surface-700 p-12 text-center">
@@ -1855,20 +2436,29 @@ const RecepcionModule = () => {
                   ) : (
                     <div className="overflow-x-auto rounded-2xl border border-gray-100 dark:border-surface-800 bg-white dark:bg-surface-900">
                       <table className="w-full min-w-[640px] text-left">
-                        <thead className="bg-gray-50 dark:bg-surface-950 text-[9px] font-black uppercase tracking-widest text-gray-500 dark:text-surface-400">
+                        <thead className="bg-gray-50 dark:bg-surface-950 text-[9px] font-black uppercase tracking-widest text-gray-600 dark:text-gray-300">
                           <tr>
                             <th className="px-3 py-2.5">Tipos</th>
                             <th className="px-3 py-2.5">Marca</th>
                             <th className="px-3 py-2.5">Modelo</th>
                             <th className="px-3 py-2.5 text-center">Cantidad</th>
+                            <th className="px-3 py-2.5">Serie (recibo)</th>
                             <th className="px-3 py-2.5 text-center">Recibido</th>
                             <th className="px-3 py-2.5 text-center">Pendiente</th>
                             <th className="px-3 py-2.5 text-right">Acciones</th>
                           </tr>
                         </thead>
-                        <tbody className="text-xs">
+                        <tbody className="text-xs text-gray-900 dark:text-gray-100">
                           {productLines.map((line) => {
                             const pending = Math.max(line.quantity - line.withSerial, 0)
+                            const receiptSerials = Array.from(
+                              new Set(
+                                line.units
+                                  .filter((u) => !u.isAdditional)
+                                  .map((u) => (u.expectedSerial || '').trim())
+                                  .filter(Boolean)
+                              )
+                            ).join(', ')
                             const isSelected =
                               activeProductLineKey === line.key && !activeUnitForReception
                             return (
@@ -1891,10 +2481,15 @@ const RecepcionModule = () => {
                                 )}
                               >
                                 <td className="px-3 py-2.5 font-bold text-gray-800 dark:text-white">{line.tipo}</td>
-                                <td className="px-3 py-2.5 text-gray-700 dark:text-surface-200">{line.marca}</td>
-                                <td className="px-3 py-2.5 text-gray-700 dark:text-surface-200">{line.modelo}</td>
+                                <td className="px-3 py-2.5 font-semibold text-gray-800 dark:text-gray-100">{line.marca}</td>
+                                <td className="px-3 py-2.5 text-gray-700 dark:text-gray-200">{line.modelo}</td>
                                 <td className="px-3 py-2.5 text-center font-mono font-black text-gray-900 dark:text-white">
                                   {line.quantity}
+                                </td>
+                                <td className="px-3 py-2.5 font-mono text-[10px] font-bold text-purple-700 dark:text-purple-300">
+                                  {receiptSerials || (
+                                    <span className="text-amber-600 dark:text-amber-400">Sin serie en sistema</span>
+                                  )}
                                 </td>
                                 <td className="px-3 py-2.5 text-center font-mono font-black text-emerald-600 dark:text-emerald-400">
                                   {line.withSerial}
@@ -1934,7 +2529,7 @@ const RecepcionModule = () => {
                           <h4 className="text-lg sm:text-xl font-black text-gray-900 dark:text-white tracking-tight">
                             {activeProductLine.modelo}
                           </h4>
-                          <p className="text-[9px] font-black uppercase tracking-widest text-gray-500 mt-1">
+                          <p className="text-[9px] font-black uppercase tracking-widest text-gray-600 dark:text-gray-300 mt-1">
                             {activeProductLine.withSerial}/{activeProductLine.quantity} series ·{' '}
                             {Math.max(activeProductLine.quantity - activeProductLine.withSerial, 0)} pendiente(s)
                           </p>
@@ -1956,6 +2551,13 @@ const RecepcionModule = () => {
                         </p>
                       ) : (
                         <div className="space-y-2">
+                          {(() => {
+                            const nextPending = activeProductLine.units.find(
+                              (u) => !(u.serie || '').trim() && !u.isAdditional
+                            )
+                            const nextExpected = nextPending?.expectedSerial?.trim() || ''
+                            return (
+                              <>
                           <input
                             ref={serialInputRef}
                             value={serialInput}
@@ -1969,18 +2571,36 @@ const RecepcionModule = () => {
                                 void handleAddSerialToLine()
                               }
                             }}
-                            placeholder={`Pistolear serie ${activeProductLine.withSerial + 1} (Enter para confirmar)`}
+                            placeholder={
+                              nextExpected
+                                ? `Serie del Receipt: ${nextExpected} (Enter)`
+                                : `Pistolear serie ${activeProductLine.withSerial + 1} (Enter)`
+                            }
                             disabled={addingSerial || !!activeBoxLabel || activeBoxCompleted}
-                            className="w-full px-4 py-4 rounded-xl bg-white dark:bg-surface-950 border-2 border-gray-100 dark:border-surface-800 font-mono text-sm sm:text-base font-bold text-gray-900 dark:text-white focus:outline-none focus:border-cyan-500 disabled:opacity-50"
+                            className={cn(
+                              'w-full px-4 py-4 rounded-xl bg-white dark:bg-surface-950 border-2 font-mono text-sm sm:text-base font-bold text-gray-900 dark:text-white focus:outline-none disabled:opacity-50',
+                              receiptInputBorderClass(nextExpected, serialInput) ||
+                                'border-gray-100 dark:border-surface-800 focus:border-cyan-500'
+                            )}
                             autoComplete="off"
                           />
+                          {!serialError ? (
+                            <ReceiptSerialMatchHint
+                              expectedFromReceipt={nextExpected}
+                              draftSerial={serialInput}
+                            />
+                          ) : null}
+                              </>
+                            )
+                          })()}
+                          {receiptSerialSyncInfo ? (
+                            <p className="text-[9px] font-bold text-purple-600 dark:text-purple-300">
+                              {receiptSerialSyncInfo}
+                            </p>
+                          ) : null}
                           {serialError ? (
                             <p className="text-[9px] font-black uppercase tracking-widest text-rose-500">
                               {serialError}
-                            </p>
-                          ) : activeProductLine.withSerial === 0 ? (
-                            <p className="text-[10px] text-center text-gray-400 font-medium">
-                              Escanee la primera serie para comenzar…
                             </p>
                           ) : null}
                           <p className="text-[9px] font-mono font-bold text-gray-400 text-right">
@@ -1991,18 +2611,35 @@ const RecepcionModule = () => {
 
                       {activeProductLine.units.some((u) => (u.serie || '').trim()) ? (
                         <div className="space-y-1.5 pt-2 border-t border-cyan-500/20">
-                          <p className="text-[9px] font-black uppercase tracking-widest text-gray-500">
+                          <p className="text-[9px] font-black uppercase tracking-widest text-gray-600 dark:text-gray-300">
                             Series capturadas
                           </p>
                           <div className="flex flex-wrap gap-2">
                             {activeProductLine.units
                               .filter((u) => (u.serie || '').trim())
-                              .map((unit) => (
+                              .map((unit) => {
+                                const exp = (unit.expectedSerial || '').trim().toUpperCase()
+                                const cap = (unit.serie || '').trim().toUpperCase()
+                                const ok = !exp || cap === exp
+                                return (
                                 <div
                                   key={unit.id}
-                                  className="inline-flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-white dark:bg-surface-900 border border-gray-100 dark:border-surface-800"
+                                  className={cn(
+                                    'inline-flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-white dark:bg-surface-900 border',
+                                    ok
+                                      ? 'border-emerald-300 dark:border-emerald-600/50'
+                                      : 'border-amber-400 dark:border-amber-500/50'
+                                  )}
                                 >
-                                  <span className="font-mono text-[11px] font-bold">{unit.serie}</span>
+                                  <span className="font-mono text-[11px] font-bold text-gray-900 dark:text-white">{unit.serie}</span>
+                                  <span
+                                    className={cn(
+                                      'text-[8px] font-black uppercase',
+                                      ok ? 'text-emerald-600' : 'text-amber-600'
+                                    )}
+                                  >
+                                    {unit.isAdditional ? 'Extra' : ok ? 'OK recibo' : '≠ recibo'}
+                                  </span>
                                   <button
                                     type="button"
                                     title="Quitar serie"
@@ -2013,7 +2650,7 @@ const RecepcionModule = () => {
                                     <Trash2 size={12} />
                                   </button>
                                 </div>
-                              ))}
+                              )})}
                           </div>
                         </div>
                       ) : null}
@@ -2425,24 +3062,53 @@ const RecepcionModule = () => {
                 <div className="shrink-0 p-4 border-t border-gray-100 dark:border-surface-800 bg-gray-50/80 dark:bg-surface-950/80">
                   <button
                     type="button"
-                    disabled={
-                      completingTicket ||
-                      !((activeBoxDetails.units || []) as ReceptionUnit[]).every((u) =>
-                        !!(u.serie || '').trim()
-                      )
-                    }
-                    onClick={() => void handleCompleteTicket()}
-                    className="w-full py-4 rounded-2xl font-black uppercase tracking-[0.2em] text-[11px] transition-all disabled:opacity-40 disabled:cursor-not-allowed bg-gray-200 dark:bg-surface-800 text-gray-500 dark:text-surface-400 enabled:bg-indigo-600 enabled:text-white enabled:hover:bg-indigo-500 enabled:shadow-lg"
+                    disabled={completingTicket || !pitoleoCanComplete}
+                    onClick={handleCompleteTicket}
+                    className="w-full py-4 rounded-2xl font-black uppercase tracking-[0.2em] text-[11px] transition-all disabled:opacity-40 disabled:cursor-not-allowed bg-gray-200 dark:bg-surface-800 text-gray-600 dark:text-gray-200 enabled:bg-indigo-600 enabled:text-white enabled:hover:bg-indigo-500 enabled:shadow-lg"
                   >
-                    {((activeBoxDetails.units || []) as ReceptionUnit[]).every((u) => !!(u.serie || '').trim())
-                      ? 'Series completas — enviar a bodega'
-                      : 'Complete el pistoleo de series'}
+                    {pitoleoAllSeriesComplete
+                      ? 'Enviar a bodega'
+                      : 'Cerrar recepción (puede faltar equipo del recibo)'}
                   </button>
                 </div>
               </div>
             </div>
           </div>
         )}
+
+        {serialDecision ? (
+          <ReceptionSerialDecisionModal
+            open
+            scannedSerial={serialDecision.scanned}
+            expectedSerial={serialDecision.expected}
+            submitting={serialDecisionBusy || addingSerial}
+            candidates={(activeProductLine?.units || [])
+              .filter((u) => !u.isAdditional && !(u.serie || '').trim())
+              .map((u, idx) => ({
+                id: u.id,
+                label: `Unidad ${idx + 1}`,
+                expectedSerial: u.expectedSerial,
+              }))}
+            onConfirm={(payload) => void handleSerialDecision(payload)}
+            onCancel={() => setSerialDecision(null)}
+          />
+        ) : null}
+
+        {receptionCloseSummary ? (
+          <ReceptionCloseConfirmModal
+            open={closeModalOpen}
+            summary={receptionCloseSummary}
+            missingNotes={closeMissingNotes}
+            additionalNotes={closeAdditionalNotes}
+            generalNotes={closeGeneralNotes}
+            onMissingNotesChange={setCloseMissingNotes}
+            onAdditionalNotesChange={setCloseAdditionalNotes}
+            onGeneralNotesChange={setCloseGeneralNotes}
+            onConfirm={() => void confirmCloseReception()}
+            onCancel={() => setCloseModalOpen(false)}
+            submitting={completingTicket}
+          />
+        ) : null}
       </div>
     </div>
   )

@@ -4,19 +4,25 @@ import { useState } from 'react'
 import {
   Users,
   Database,
-  Building2
+  Building2,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { UsersTab } from './UsersTab'
 import { CatalogsTab } from './CatalogsTab'
 import { CompanyTab } from './CompanyTab'
-import { type SystemUser, type AllCatalogs, type CompanySettings } from '../actions'
+import {
+  type SystemUser,
+  type AllCatalogs,
+  type CompanySettings,
+} from '../actions'
+import type { FiscalSatCatalogStatus } from '../../general/actions'
 import { Text } from '@/components/ui/Text'
 
 interface ConfigTabsProps {
   users: SystemUser[]
   catalogs: AllCatalogs
   companySettings: CompanySettings | null
+  fiscalCatalog?: FiscalSatCatalogStatus | null
   isConfigured?: boolean
 }
 
@@ -26,7 +32,13 @@ const tabs = [
   { id: 'company', label: 'Empresa', icon: Building2 },
 ]
 
-export function ConfigTabs({ users, catalogs, companySettings, isConfigured = true }: ConfigTabsProps) {
+export function ConfigTabs({
+  users,
+  catalogs,
+  companySettings,
+  fiscalCatalog = null,
+  isConfigured = true,
+}: ConfigTabsProps) {
   const [activeTab, setActiveTab] = useState('users')
 
   return (
@@ -53,7 +65,9 @@ export function ConfigTabs({ users, catalogs, companySettings, isConfigured = tr
       {/* Tab Content */}
       <div>
         {activeTab === 'users' && <UsersTab users={users} isConfigured={isConfigured} />}
-        {activeTab === 'catalogs' && <CatalogsTab catalogs={catalogs} />}
+        {activeTab === 'catalogs' && (
+          <CatalogsTab catalogs={catalogs} fiscalCatalog={fiscalCatalog} />
+        )}
         {activeTab === 'company' && <CompanyTab settings={companySettings} />}
       </div>
     </div>

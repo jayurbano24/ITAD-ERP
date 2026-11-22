@@ -1,7 +1,7 @@
 'use client'
 
 import { PackageCheck } from 'lucide-react'
-import RecepcionModule from './components/RecepcionModule'
+import RecepcionModule from '../components/RecepcionModule'
 
 export default function DashboardRecepcion() {
   return (

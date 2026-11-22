@@ -8,6 +8,7 @@ import {
   quotationPdfFileName,
   type QuotationPrintPayload,
 } from '@/lib/ventas/printQuotationPdf'
+import QuotationBarcode from './QuotationBarcode'
 
 type Props = {
   open: boolean
@@ -114,11 +115,9 @@ function PdfViewerTitle({ payload }: { payload: QuotationPrintPayload | null }) 
     return <p className="text-sm font-semibold text-gray-800 dark:text-white">Vista previa PDF</p>
   }
   return (
-    <div className="min-w-0">
-      <p className="text-sm font-bold text-gray-900 dark:text-white truncate">
-        {payload.quoteNumber} — {payload.title}
-      </p>
-      <p className="text-[11px] text-gray-500 dark:text-surface-400 font-mono truncate">
+    <div className="min-w-0 flex items-center gap-3">
+      <QuotationBarcode quoteNumber={payload.quoteNumber} size="sm" />
+      <p className="text-[11px] text-gray-500 dark:text-surface-400 font-mono truncate hidden sm:block">
         {quotationPdfFileName(payload.quoteNumber)}
       </p>
     </div>

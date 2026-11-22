@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react'
 import { Image as ImageIcon, Loader2, Upload, X } from 'lucide-react'
+import QuotationBarcode from './QuotationBarcode'
 
 type Props = {
   open: boolean
@@ -66,9 +67,7 @@ export default function QuotationAvanceModal({
         <div className="flex items-start justify-between gap-2 mb-3">
           <div>
             <h3 className="font-bold text-gray-900 dark:text-white">{title}</h3>
-            {quoteNumber ? (
-              <p className="text-xs text-gray-500 font-mono mt-0.5">{quoteNumber}</p>
-            ) : null}
+            {quoteNumber ? <QuotationBarcode quoteNumber={quoteNumber} size="sm" className="mt-1" /> : null}
           </div>
           <button
             type="button"

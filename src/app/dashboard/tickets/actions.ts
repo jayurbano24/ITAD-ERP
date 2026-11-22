@@ -5,6 +5,7 @@ import { revalidatePath } from 'next/cache'
 import { createClient } from '@/lib/supabase/server'
 import type { TicketItem } from '@/lib/supabase/types'
 import { logTicketHistory } from './history'
+import { parseOrderReferences } from '@/lib/tickets/orderReferences'
 import { createAuditLog } from '@/lib/audit'
 
 export type TicketStatus =
@@ -34,8 +35,13 @@ export interface OperationsTicket {
   priority: number
   assigned_to: string | null
   notes: string | null
+  xsi_order_number?: string | null
+  epc_order_number?: string | null
   attachment_url: string | null  // URL del archivo Excel adjunto
   attachment_name: string | null // Nombre original del archivo
+  equipment_receipt_notes?: string | null
+  signed_receipt_url?: string | null
+  signed_receipt_name?: string | null
   created_by: string | null
   created_by_user?: {
     id: string
@@ -244,6 +250,14 @@ export async function createTicketAction(formData: FormData): Promise<{ success:
     const pickup_date = formData.get('pickup_date') as string || null
     const priority = parseInt(formData.get('priority') as string) || 3
     const notes = formData.get('notes') as string || null
+    let xsi_order_number = (formData.get('xsi_order_number') as string)?.trim() || null
+    let epc_order_number = (formData.get('epc_order_number') as string)?.trim() || null
+    const ordenesCombined = (formData.get('ordenes') as string)?.trim() || ''
+    if (ordenesCombined && (!xsi_order_number || !epc_order_number)) {
+      const parsed = parseOrderReferences(ordenesCombined)
+      xsi_order_number = xsi_order_number || parsed.xsi
+      epc_order_number = epc_order_number || parsed.epc
+    }
 
     // Extraer items manuales del FormData
     const manualItems: Array<{
@@ -326,6 +340,8 @@ export async function createTicketAction(formData: FormData): Promise<{ success:
       pickup_date: pickup_date || null,
       priority,
       notes,
+      xsi_order_number,
+      epc_order_number,
       created_by: user?.id,
     })
     .select('id, readable_id, title')
@@ -342,11 +358,21 @@ export async function createTicketAction(formData: FormData): Promise<{ success:
       const safeName = receiptPhoto.name.replace(/[^a-zA-Z0-9._-]/g, '_')
       const path = `${createdTicket.id}/receipt/${Date.now()}-${safeName || `recibo.${ext}`}`
       const buffer = Buffer.from(await receiptPhoto.arrayBuffer())
+      const spreadsheetExt = ['xlsx', 'xls', 'csv']
+      const contentType =
+        receiptPhoto.type ||
+        (ext === 'pdf'
+          ? 'application/pdf'
+          : spreadsheetExt.includes(ext)
+            ? ext === 'csv'
+              ? 'text/csv'
+              : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+            : 'image/jpeg')
 
       const { error: uploadError } = await supabase.storage
         .from('ticket-attachments')
         .upload(path, buffer, {
-          contentType: receiptPhoto.type || 'image/jpeg',
+          contentType,
           upsert: false,
         })
 
@@ -375,41 +401,20 @@ export async function createTicketAction(formData: FormData): Promise<{ success:
 
   // Insertar items manuales (schema real: sin expected_quantity/status)
   if (manualItems.length > 0) {
-    type TicketItemInsertRow = {
-      ticket_id: string
-      brand_id: string
-      model_id: string
-      product_type_id: string
-      brand: string | null
-      model: string | null
-      product_type: string | null
-      box_number: number
-      validation_status: 'PENDIENTE_VALIDACION'
-      expected_serial: string | null
-    }
-
-    const ticketItemsPayload: TicketItemInsertRow[] = manualItems.flatMap((item) => {
-      const base = {
-        ticket_id: createdTicket.id,
+    const { buildTicketItemsInsertRows } = await import('@/lib/tickets/syncTicketManifestFromPrefill')
+    const ticketItemsPayload = buildTicketItemsInsertRows(
+      createdTicket.id,
+      manualItems.map((item) => ({
         brand_id: item.brand_id,
         model_id: item.model_id,
         product_type_id: item.product_type_id,
-        brand: item.brand,
-        model: item.model,
-        product_type: item.product_type,
-        box_number: 0,
-        validation_status: 'PENDIENTE_VALIDACION' as const,
-      }
-
-      // Con serie: una fila. Sin serie y qty>1: N filas (una por unidad esperada).
-      if (item.expected_serial) {
-        return [{ ...base, expected_serial: item.expected_serial as string }]
-      }
-      return Array.from({ length: item.quantity }, (): TicketItemInsertRow => ({
-        ...base,
-        expected_serial: null,
+        quantity: item.quantity,
+        expected_serial: item.expected_serial,
+        brand_name: item.brand || 'Sin marca',
+        model_name: item.model || 'Sin modelo',
+        product_type_name: item.product_type || 'Equipo',
       }))
-    })
+    )
 
     console.log('[CREATE TICKET] Inserting items:', ticketItemsPayload)
 
@@ -694,6 +699,162 @@ export async function deleteTicketCompletely(ticketId: string): Promise<{ succes
  */
 export async function cancelTicketAction(ticketId: string): Promise<{ success: boolean; error: string | null }> {
   return updateTicketStatus(ticketId, 'cancelled')
+}
+
+export type TicketReceiptEnrichment = {
+  batchOrdCodes: string[]
+  batchReceptionDate: string | null
+  clientAddress: string | null
+}
+
+export async function getTicketReceiptEnrichmentAction(
+  ticketId: string
+): Promise<{ data: TicketReceiptEnrichment | null; error: string | null }> {
+  try {
+    if (!ticketId) return { data: null, error: null }
+    const supabase = await createClient()
+
+    const { data: batches } = await supabase
+      .from('batches')
+      .select('internal_batch_id, reception_date')
+      .eq('ticket_id', ticketId)
+      .order('reception_date', { ascending: false })
+      .limit(8)
+
+    const batchOrdCodes = (batches || [])
+      .map((b) => String(b.internal_batch_id || '').trim())
+      .filter(Boolean)
+
+    const batchReceptionDate =
+      (batches || []).find((b) => b.reception_date)?.reception_date?.toString() || null
+
+    const { data: ticket } = await supabase
+      .from('operations_tickets')
+      .select('client:crm_entities!client_id (address)')
+      .eq('id', ticketId)
+      .maybeSingle()
+
+    const clientAddress =
+      (ticket?.client as { address?: string | null } | null | undefined)?.address?.trim() || null
+
+    return {
+      data: { batchOrdCodes, batchReceptionDate, clientAddress },
+      error: null,
+    }
+  } catch (err) {
+    return {
+      data: null,
+      error: err instanceof Error ? err.message : 'No se pudo cargar datos del recibo',
+    }
+  }
+}
+
+export async function saveEquipmentReceiptNotesAction(
+  ticketId: string,
+  notes: string
+): Promise<{ success: boolean; error: string | null }> {
+  try {
+    if (!ticketId) return { success: false, error: 'Ticket inválido' }
+    const supabase = await createClient()
+    const { error } = await supabase
+      .from('operations_tickets')
+      .update({
+        equipment_receipt_notes: notes.trim() || null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', ticketId)
+
+    if (error) {
+      if (/equipment_receipt_notes|schema cache/i.test(error.message)) {
+        return {
+          success: false,
+          error: 'Falta migración equipment_receipt_notes en Supabase. Ejecute la migración 20261122_ticket_equipment_receipt.',
+        }
+      }
+      return { success: false, error: error.message }
+    }
+    revalidatePath('/dashboard/tickets')
+    return { success: true, error: null }
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : 'Error al guardar notas' }
+  }
+}
+
+export async function uploadSignedEquipmentReceiptAction(
+  ticketId: string,
+  formData: FormData
+): Promise<{
+  success: boolean
+  error: string | null
+  signed_receipt_url?: string | null
+  signed_receipt_name?: string | null
+}> {
+  try {
+    if (!ticketId) return { success: false, error: 'Ticket inválido' }
+    const file = formData.get('signed_receipt')
+    if (!(file instanceof File) || file.size === 0) {
+      return { success: false, error: 'Seleccione un PDF o imagen del recibo firmado' }
+    }
+
+    const supabase = await createClient()
+    const {
+      data: { user },
+    } = await supabase.auth.getUser()
+    if (!user) return { success: false, error: 'No autenticado' }
+
+    const ext = file.name.split('.').pop()?.toLowerCase() || 'pdf'
+    const allowed = ['pdf', 'png', 'jpg', 'jpeg', 'webp']
+    if (!allowed.includes(ext)) {
+      return { success: false, error: 'Formato no permitido. Use PDF, PNG o JPG.' }
+    }
+
+    const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, '_')
+    const path = `${ticketId}/signed-receipt/${Date.now()}-${safeName || `signed.${ext}`}`
+    const buffer = Buffer.from(await file.arrayBuffer())
+    const contentType =
+      file.type ||
+      (ext === 'pdf'
+        ? 'application/pdf'
+        : ext === 'png'
+          ? 'image/png'
+          : 'image/jpeg')
+
+    const { error: uploadError } = await supabase.storage
+      .from('ticket-attachments')
+      .upload(path, buffer, { contentType, upsert: true })
+
+    if (uploadError) {
+      return { success: false, error: uploadError.message }
+    }
+
+    const { data: urlData } = supabase.storage.from('ticket-attachments').getPublicUrl(path)
+    const signed_receipt_url = urlData.publicUrl
+    const signed_receipt_name = file.name || `signed-receipt.${ext}`
+
+    const { error: updateError } = await supabase
+      .from('operations_tickets')
+      .update({
+        signed_receipt_url,
+        signed_receipt_name,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', ticketId)
+
+    if (updateError) {
+      if (/signed_receipt/i.test(updateError.message)) {
+        return {
+          success: false,
+          error: 'Falta migración signed_receipt_* en Supabase. Ejecute 20261122_ticket_equipment_receipt.',
+        }
+      }
+      return { success: false, error: updateError.message }
+    }
+
+    revalidatePath('/dashboard/tickets')
+    return { success: true, error: null, signed_receipt_url, signed_receipt_name }
+  } catch (err) {
+    return { success: false, error: err instanceof Error ? err.message : 'Error al subir recibo' }
+  }
 }
 
 /**

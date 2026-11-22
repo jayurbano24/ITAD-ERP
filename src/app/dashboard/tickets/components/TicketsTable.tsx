@@ -31,18 +31,33 @@ import {
   Settings,
   Eraser,
   ImagePlus,
-  ScanLine
+  ScanLine,
+  FileSpreadsheet,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { createTicketAction, updateTicketAction, updateTicketStatus, deleteTicketCompletely, getTicketAssetsAction, type OperationsTicket, type TicketStatus, type TicketType } from '../actions'
-import { prefillTicketFromReceiptPhoto } from '../receiptPrefill'
+import {
+  createTicketAction,
+  updateTicketAction,
+  updateTicketStatus,
+  deleteTicketCompletely,
+  getTicketAssetsAction,
+  getTicketById,
+  type OperationsTicket,
+  type TicketStatus,
+  type TicketType,
+} from '../actions'
+import type { ReceiptPrefillResult } from '@/lib/tickets/receiptPrefillService'
+import { isReceiptPdfFile, isReceptionSpreadsheetFile } from '@/lib/tickets/parseReceptionExcel'
+import { formatOrderReferences, parseOrderReferences } from '@/lib/tickets/orderReferences'
 import { type CrmEntity } from '../../clientes/actions'
+import { createCustomerQuick } from '../../ventas/actions'
 import { type CatalogItem } from '../../configuracion/usuarios/actions'
 import { Badge, type BadgeVariant } from '@/components/ui/Badge'
 import { SearchInput } from '@/components/ui/SearchInput'
 import { DataTable } from '@/components/ui/DataTable'
 import { Text } from '@/components/ui/Text'
 import { FormLabel } from '@/components/ui/FormLabel'
+import { EquipmentReceiptSection } from './EquipmentReceiptSection'
 
 interface TicketsTableProps {
   initialTickets: OperationsTicket[]
@@ -693,7 +708,19 @@ function CreateTicketModal({
     product_type_id: string
     quantity: number
     expected_serial?: string | null
+    brand_name?: string
+    model_name?: string
+    product_type_name?: string
   }>>([])
+  const [clientModalOpen, setClientModalOpen] = useState(false)
+  const [newClientName, setNewClientName] = useState('')
+  const [newClientNit, setNewClientNit] = useState('')
+  const [newClientPhone, setNewClientPhone] = useState('')
+  const [newClientEmail, setNewClientEmail] = useState('')
+  const [newClientOrders, setNewClientOrders] = useState('')
+  const [orderReferences, setOrderReferences] = useState('')
+  const [savingClient, setSavingClient] = useState(false)
+  const [clientFormError, setClientFormError] = useState<string | null>(null)
   const [newItem, setNewItem] = useState({
     brand_id: '',
     model_id: '',
@@ -715,28 +742,59 @@ function CreateTicketModal({
   const selectedClient = localClients.find(c => c.id === selectedClientId)
 
   const handleReceiptPhoto = async (file: File) => {
+    const isExcel = isReceptionSpreadsheetFile(file)
+    const isPdf = isReceiptPdfFile(file)
     setReceiptBusy(true)
     setReceiptError(null)
-    setReceiptInfo('Leyendo foto del recibo…')
+    setReceiptInfo(
+      isExcel
+        ? 'Leyendo Excel de equipos…'
+        : isPdf
+          ? 'Leyendo PDF del recibo…'
+          : 'Leyendo foto del recibo…'
+    )
     try {
       if (receiptPreviewUrl) URL.revokeObjectURL(receiptPreviewUrl)
       setReceiptFile(file)
-      setReceiptPreviewUrl(URL.createObjectURL(file))
+      setReceiptPreviewUrl(isExcel || isPdf ? null : URL.createObjectURL(file))
 
       const formData = new FormData()
       formData.append('receipt', file)
-      const result = await prefillTicketFromReceiptPhoto(formData)
-
-      if (!result.success || !result.client) {
-        setReceiptError(result.error || 'No se pudo interpretar el recibo')
+      const response = await fetch('/api/tickets/receipt-prefill', {
+        method: 'POST',
+        body: formData,
+        credentials: 'include',
+      })
+      const result = (await response.json().catch(() => null)) as ReceiptPrefillResult | null
+      if (!response.ok || !result) {
+        setReceiptError(result?.error || `No se pudo procesar el archivo (HTTP ${response.status})`)
         setReceiptInfo(null)
         return
       }
 
-      setLocalClients((prev) => {
-        if (prev.some((c) => c.id === result.client!.id)) return prev
-        return [result.client!, ...prev]
-      })
+      if (!result.success && result.items.length === 0) {
+        setReceiptError(result.error || 'No se pudo interpretar el archivo')
+        setReceiptInfo(null)
+        return
+      }
+      if (result.items.length === 0) {
+        setReceiptError('No se detectaron equipos. Revisa el archivo o agrega líneas manualmente.')
+        setReceiptInfo(null)
+        return
+      }
+      if (!isExcel && !result.client) {
+        setReceiptInfo(
+          'Equipos detectados. Seleccione o cree el cliente manualmente antes de guardar el ticket.'
+        )
+      }
+
+      if (result.client) {
+        setLocalClients((prev) => {
+          if (prev.some((c) => c.id === result.client!.id)) return prev
+          return [result.client!, ...prev]
+        })
+        setSelectedClientId(result.client.id)
+      }
       setLocalBrands((prev) => {
         const next = [...prev]
         for (const brand of result.brands) {
@@ -759,12 +817,16 @@ function CreateTicketModal({
         return next
       })
 
-      setSelectedClientId(result.client.id)
       if (result.pickup_date) setPickupDate(result.pickup_date)
       if (result.pickup_address) setPickupAddress(result.pickup_address)
+      if (result.xsi_order_number || result.epc_order_number) {
+        setOrderReferences(
+          formatOrderReferences(result.xsi_order_number, result.epc_order_number)
+        )
+      }
       if (result.notes) {
-        setNotes(result.notes)
-        setDescription(result.notes)
+        setNotes((prev) => (prev ? `${prev} · ${result.notes}` : result.notes!))
+        if (!isExcel) setDescription(result.notes)
       }
 
       if (result.items.length > 0) {
@@ -775,20 +837,30 @@ function CreateTicketModal({
             model_id: item.model_id,
             product_type_id: item.product_type_id,
             quantity: item.quantity,
-            expected_serial: item.expected_serial,
+            expected_serial: item.expected_serial?.trim() || null,
+            brand_name: item.brand_name,
+            model_name: item.model_name,
+            product_type_name: item.product_type_name,
           }))
         )
       }
 
-      const orderLabel = result.parsed?.orderNumber ? ` (${result.parsed.orderNumber})` : ''
-      setReceiptInfo(
-        result.clientCreated
-          ? `Cliente «${result.client.commercial_name}» creado${orderLabel}. Revisa y guarda el ticket.`
-          : `Cliente «${result.client.commercial_name}» seleccionado${orderLabel}. Revisa y guarda el ticket.`
-      )
+      if (isExcel) {
+        const units = result.items.reduce((s, i) => s + i.quantity, 0)
+        setReceiptInfo(
+          `${result.items.length} línea(s), ${units} unidad(es) cargadas desde Excel. Revisa marca/modelo y guarda.`
+        )
+      } else if (result.client) {
+        const orderLabel = result.parsed?.orderNumber ? ` (${result.parsed.orderNumber})` : ''
+        setReceiptInfo(
+          result.clientCreated
+            ? `Cliente «${result.client.commercial_name}» creado${orderLabel}. Revisa y guarda el ticket.`
+            : `Cliente «${result.client.commercial_name}» seleccionado${orderLabel}. Revisa y guarda el ticket.`
+        )
+      }
     } catch (err) {
       console.error('[RECEIPT UPLOAD]', err)
-      setReceiptError(err instanceof Error ? err.message : 'Error al procesar la foto')
+      setReceiptError(err instanceof Error ? err.message : 'Error al procesar el archivo')
       setReceiptInfo(null)
     } finally {
       setReceiptBusy(false)
@@ -818,10 +890,16 @@ function CreateTicketModal({
       return
     }
 
+    const brand = localBrands.find((b) => b.id === newItem.brand_id)
+    const model = localModels.find((m) => m.id === newItem.model_id)
+    const ptype = localProductTypes.find((t) => t.id === newItem.product_type_id)
     const itemToAdd = {
       id: `manual-${Date.now()}`,
       ...newItem,
       expected_serial: null as string | null,
+      brand_name: brand?.name,
+      model_name: model?.name,
+      product_type_name: ptype?.name,
     }
 
     console.log('[ADD ITEM] Adding item:', itemToAdd)
@@ -841,6 +919,65 @@ function CreateTicketModal({
   // Eliminar item manual
   const handleRemoveItem = (itemId: string) => {
     setManualItems(manualItems.filter(item => item.id !== itemId))
+  }
+
+  const manualUnitsTotal = useMemo(
+    () => manualItems.reduce((sum, item) => sum + (item.quantity || 0), 0),
+    [manualItems]
+  )
+
+  const handleCreateClientQuick = async () => {
+    const name = newClientName.trim()
+    if (!name) {
+      setClientFormError('Escribe el nombre o razón social')
+      return
+    }
+    setSavingClient(true)
+    setClientFormError(null)
+    try {
+      const { data, error: createError } = await createCustomerQuick({
+        commercial_name: name,
+        tax_id_nit: newClientNit.trim() || 'CF',
+        phone: newClientPhone.trim() || null,
+        email: newClientEmail.trim() || null,
+      })
+      if (createError || !data) {
+        setClientFormError(createError || 'No se pudo crear el cliente')
+        return
+      }
+      const entity = {
+        id: data.id,
+        commercial_name: data.commercial_name,
+        legal_name: data.legal_name ?? null,
+        tax_id_nit: data.tax_id_nit,
+        entity_type: (data.entity_type || 'client') as CrmEntity['entity_type'],
+        email: data.email ?? null,
+        phone: data.phone ?? null,
+        address: data.address ?? null,
+        city: data.city || 'Guatemala',
+        country: 'Guatemala',
+        contact_person: null,
+        notes: null,
+        is_active: true,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+        account_class: 'empresa' as const,
+      } as CrmEntity
+      setLocalClients((prev) => {
+        if (prev.some((c) => c.id === entity.id)) return prev
+        return [entity, ...prev]
+      })
+      setSelectedClientId(entity.id)
+      if (newClientOrders.trim()) setOrderReferences(newClientOrders.trim())
+      setClientModalOpen(false)
+      setNewClientName('')
+      setNewClientNit('')
+      setNewClientPhone('')
+      setNewClientEmail('')
+      setNewClientOrders('')
+    } finally {
+      setSavingClient(false)
+    }
   }
 
   return (
@@ -877,6 +1014,9 @@ function CreateTicketModal({
             if (receiptFile) {
               formData.set('receipt_photo', receiptFile)
             }
+            const { xsi, epc } = parseOrderReferences(orderReferences)
+            if (xsi) formData.set('xsi_order_number', xsi)
+            if (epc) formData.set('epc_order_number', epc)
             onSubmit(formData)
           }}
           className="p-6 space-y-5"
@@ -905,17 +1045,17 @@ function CreateTicketModal({
               </div>
               <div className="flex-1 min-w-0">
                 <p className="text-sm font-medium text-gray-900 dark:text-white">
-                  Precargar desde foto del recibo
+                  Precargar detalle de recepción
                 </p>
                 <p className="text-xs text-surface-400 mt-0.5">
-                  Sube el «Receipt of Equipment» para crear el cliente y llenar equipos, dirección y fecha.
+                  Foto o PDF del recibo XSi (cliente + equipos) o Excel con columnas Marca, Modelo, Tipo y Cantidad.
                 </p>
               </div>
             </div>
             <input
               ref={receiptInputRef}
               type="file"
-              accept="image/*,.pdf"
+              accept="image/*,.pdf,.xlsx,.xls,.csv"
               className="hidden"
               disabled={receiptBusy || isPending}
               onChange={(e) => {
@@ -935,15 +1075,29 @@ function CreateTicketModal({
               {receiptBusy ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin" />
-                  Procesando foto…
+                  Procesando archivo…
                 </>
               ) : (
                 <>
                   <ImagePlus className="w-4 h-4" />
-                  Subir foto del recibo
+                  Subir recibo o Excel
                 </>
               )}
             </button>
+            {receiptFile && !receiptPreviewUrl && isReceptionSpreadsheetFile(receiptFile) && (
+              <div className="mt-2 flex items-center gap-2 rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-3 py-2">
+                <FileSpreadsheet className="w-4 h-4 text-emerald-500 shrink-0" />
+                <p className="text-[11px] text-emerald-200 truncate flex-1">{receiptFile.name}</p>
+                <span className="text-[10px] text-emerald-400/80">adjunto al ticket</span>
+              </div>
+            )}
+            {receiptFile && !receiptPreviewUrl && isReceiptPdfFile(receiptFile) && (
+              <div className="mt-2 flex items-center gap-2 rounded-lg border border-brand-500/30 bg-brand-500/10 px-3 py-2">
+                <FileText className="w-4 h-4 text-brand-400 shrink-0" />
+                <p className="text-[11px] text-brand-100 truncate flex-1">{receiptFile.name}</p>
+                <span className="text-[10px] text-brand-300/80">se guardará al crear el ticket</span>
+              </div>
+            )}
             {receiptPreviewUrl && (
               <div className="mt-2 overflow-hidden rounded-lg border border-surface-600 bg-surface-900">
                 {/* eslint-disable-next-line @next/next/no-img-element */}
@@ -974,22 +1128,52 @@ function CreateTicketModal({
           {/* Cliente */}
           <div className="space-y-2">
             <FormLabel required>Cliente</FormLabel>
-            <select
-              name="client_id"
-              required
-              value={selectedClientId}
-              onChange={(e) => setSelectedClientId(e.target.value)}
+            <div className="flex gap-2">
+              <select
+                name="client_id"
+                required
+                value={selectedClientId}
+                onChange={(e) => setSelectedClientId(e.target.value)}
+                className="flex-1 min-w-0 px-4 py-3 bg-white dark:bg-[#0f1419] border border-gray-200 dark:border-gray-700 rounded-xl
+                         text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-brand-500/50 
+                         focus:border-brand-500 transition-all cursor-pointer"
+              >
+                <option value="">Seleccionar cliente...</option>
+                {localClients.filter(c => c.is_active).map(client => (
+                  <option key={client.id} value={client.id}>
+                    {client.commercial_name} ({client.tax_id_nit})
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                onClick={() => {
+                  setClientFormError(null)
+                  setClientModalOpen(true)
+                }}
+                className="shrink-0 h-[46px] w-[46px] flex items-center justify-center rounded-xl
+                         bg-emerald-600 hover:bg-emerald-500 text-white transition-colors"
+                title="Nuevo cliente"
+                aria-label="Nuevo cliente"
+              >
+                <Plus className="w-5 h-5" />
+              </button>
+            </div>
+          </div>
+
+          <div className="space-y-2">
+            <FormLabel>Órdenes</FormLabel>
+            <input
+              type="text"
+              value={orderReferences}
+              onChange={(e) => setOrderReferences(e.target.value)}
+              placeholder="XSI: ORD26876 · EPC: referencia"
               className="w-full px-4 py-3 bg-white dark:bg-[#0f1419] border border-gray-200 dark:border-gray-700 rounded-xl
-                       text-gray-900 dark:text-white focus:outline-none focus:ring-2 focus:ring-brand-500/50 
-                       focus:border-brand-500 transition-all cursor-pointer"
-            >
-              <option value="">Seleccionar cliente...</option>
-              {localClients.filter(c => c.is_active).map(client => (
-                <option key={client.id} value={client.id}>
-                  {client.commercial_name} ({client.tax_id_nit})
-                </option>
-              ))}
-            </select>
+                       text-gray-900 dark:text-white font-mono text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/50"
+            />
+            <p className="text-[11px] text-surface-500">
+              Un solo campo: incluye orden XSI (ORD…) y orden EPC separadas por « · » o con etiquetas XSI: / EPC:
+            </p>
           </div>
 
           {/* Tipo y Prioridad */}
@@ -1115,21 +1299,28 @@ function CreateTicketModal({
             {manualItems.length > 0 && (
               <div className="space-y-2 mt-4 pt-4 border-t border-surface-700">
                 <p className="text-xs font-medium text-surface-400 uppercase tracking-wide">
-                  {manualItems.length} equipo{manualItems.length !== 1 ? 's' : ''} agregado{manualItems.length !== 1 ? 's' : ''}
+                  {manualItems.length} línea{manualItems.length !== 1 ? 's' : ''} · {manualUnitsTotal}{' '}
+                  unidad{manualUnitsTotal !== 1 ? 'es' : ''} (por cantidad, sin series)
                 </p>
+                <div className="max-h-52 overflow-y-auto space-y-2 pr-1">
                 {manualItems.map((item) => {
                   const brand = localBrands.find(b => b.id === item.brand_id)
                   const model = localModels.find(m => m.id === item.model_id)
                   const type = localProductTypes.find(t => t.id === item.product_type_id)
+                  const brandLabel = item.brand_name || brand?.name || 'Sin marca'
+                  const modelLabel = item.model_name || model?.name || 'Sin modelo'
+                  const typeLabel = item.product_type_name || type?.name || 'Equipo'
                   return (
                     <div key={item.id} className="flex items-start justify-between p-3 bg-surface-900/60 rounded-lg border border-surface-700">
                       <div className="flex-1 min-w-0">
-                        <p className="text-sm text-white font-medium">
-                          {brand?.name} {model?.name}
+                        <p className="text-sm text-white font-semibold">
+                          {brandLabel} · {modelLabel}
                         </p>
-                        <p className="text-xs text-surface-500">
-                          {type?.name} • Cantidad: {item.quantity}
-                          {item.expected_serial ? ` • S/N: ${item.expected_serial}` : ''}
+                        <p className="text-xs text-surface-400 mt-0.5">
+                          {typeLabel}
+                        </p>
+                        <p className="text-xs text-emerald-400/90 font-bold mt-1 tabular-nums">
+                          Cantidad: {item.quantity}
                         </p>
                       </div>
                       <button
@@ -1143,6 +1334,7 @@ function CreateTicketModal({
                     </div>
                   )
                 })}
+                </div>
                 {/* Hidden inputs para enviar los items al servidor */}
                 {manualItems.map((item, idx) => {
                   const brand = localBrands.find(b => b.id === item.brand_id)
@@ -1154,10 +1346,14 @@ function CreateTicketModal({
                       <input type="hidden" name={`items[${idx}].model_id`} value={item.model_id} />
                       <input type="hidden" name={`items[${idx}].product_type_id`} value={item.product_type_id} />
                       <input type="hidden" name={`items[${idx}].quantity`} value={item.quantity} />
-                      <input type="hidden" name={`items[${idx}].expected_serial`} value={item.expected_serial || ''} />
-                      <input type="hidden" name={`items[${idx}].brand`} value={brand?.name || ''} />
-                      <input type="hidden" name={`items[${idx}].model`} value={model?.name || ''} />
-                      <input type="hidden" name={`items[${idx}].product_type`} value={type?.name || ''} />
+                      <input
+                        type="hidden"
+                        name={`items[${idx}].expected_serial`}
+                        value={item.expected_serial || ''}
+                      />
+                      <input type="hidden" name={`items[${idx}].brand`} value={item.brand_name || brand?.name || ''} />
+                      <input type="hidden" name={`items[${idx}].model`} value={item.model_name || model?.name || ''} />
+                      <input type="hidden" name={`items[${idx}].product_type`} value={item.product_type_name || type?.name || ''} />
                     </div>
                   )
                 })}
@@ -1255,31 +1451,120 @@ function CreateTicketModal({
           </div>
         </form>
       </div>
+
+      {clientModalOpen && (
+        <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/55 p-4 rounded-2xl">
+          <div
+            className="w-full max-w-md rounded-2xl border border-gray-200 dark:border-gray-700 bg-white dark:bg-[#1a1f2e] shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between border-b border-gray-200 dark:border-gray-700 px-4 py-3">
+              <p className="text-sm font-bold text-gray-900 dark:text-white">Nuevo cliente</p>
+              <button
+                type="button"
+                onClick={() => setClientModalOpen(false)}
+                className="p-1 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-800"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="space-y-3 p-4">
+              <div>
+                <label className="mb-1 block text-[10px] font-bold uppercase text-gray-500">Nombre o razón social *</label>
+                <input
+                  value={newClientName}
+                  onChange={(e) => setNewClientName(e.target.value)}
+                  className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-[#0f1419] px-3 py-2 text-sm text-gray-900 dark:text-white"
+                  placeholder="Ej. Empresa SA"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-[10px] font-bold uppercase text-gray-500">NIT</label>
+                <input
+                  value={newClientNit}
+                  onChange={(e) => setNewClientNit(e.target.value)}
+                  className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-[#0f1419] px-3 py-2 text-sm text-gray-900 dark:text-white"
+                  placeholder="CF o NIT"
+                />
+              </div>
+              <div>
+                <label className="mb-1 block text-[10px] font-bold uppercase text-gray-500">Órdenes (XSI · EPC)</label>
+                <input
+                  value={newClientOrders}
+                  onChange={(e) => setNewClientOrders(e.target.value)}
+                  className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-[#0f1419] px-3 py-2 text-sm font-mono text-gray-900 dark:text-white"
+                  placeholder="XSI: ORD26876 · EPC: …"
+                />
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="mb-1 block text-[10px] font-bold uppercase text-gray-500">Teléfono</label>
+                  <input
+                    value={newClientPhone}
+                    onChange={(e) => setNewClientPhone(e.target.value)}
+                    className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-[#0f1419] px-3 py-2 text-sm text-gray-900 dark:text-white"
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-[10px] font-bold uppercase text-gray-500">Correo</label>
+                  <input
+                    value={newClientEmail}
+                    onChange={(e) => setNewClientEmail(e.target.value)}
+                    className="w-full rounded-lg border border-gray-300 dark:border-gray-600 bg-white dark:bg-[#0f1419] px-3 py-2 text-sm text-gray-900 dark:text-white"
+                  />
+                </div>
+              </div>
+              {clientFormError ? (
+                <p className="text-xs font-medium text-red-500">{clientFormError}</p>
+              ) : null}
+              <div className="flex justify-end gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => setClientModalOpen(false)}
+                  className="px-3 py-2 text-xs font-medium text-gray-600 dark:text-gray-300"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  disabled={savingClient}
+                  onClick={() => void handleCreateClientQuick()}
+                  className="px-4 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold uppercase disabled:opacity-50"
+                >
+                  {savingClient ? 'Guardando…' : 'Guardar cliente'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }
 
 // View Ticket Modal Component
 function ViewTicketModal({
-  ticket,
+  ticket: ticketProp,
   onClose
 }: {
   ticket: OperationsTicket
   onClose: () => void
 }) {
+  const [ticket, setTicket] = useState(ticketProp)
   const [activeTab, setActiveTab] = useState<'details' | 'assets'>('details')
   const [assets, setAssets] = useState<any[]>([])
   const [isLoadingAssets, setIsLoadingAssets] = useState(false)
   const [assetsError, setAssetsError] = useState<string | null>(null)
 
+  useEffect(() => {
+    setTicket(ticketProp)
+  }, [ticketProp])
+
   const typeConfig = ticketTypeConfig[(ticket as any).ticket_type as TicketType] || ticketTypeConfig.recoleccion
   const statConfig = getStatusBadgeConfig(ticket.status)
   const prioConfig = priorityConfig[ticket.priority] || priorityConfig[3]
 
-  // Cargar equipos solo al abrir la pestaña (evita romper el detalle del ticket)
   useEffect(() => {
-    if (activeTab !== 'assets') return
-
     let cancelled = false
     const loadAssets = async () => {
       setIsLoadingAssets(true)
@@ -1302,7 +1587,7 @@ function ViewTicketModal({
     return () => {
       cancelled = true
     }
-  }, [ticket.id, activeTab])
+  }, [ticket.id])
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -1313,7 +1598,7 @@ function ViewTicketModal({
       />
 
       {/* Modal */}
-      <div className="relative bg-surface-900 border border-surface-800 rounded-2xl w-full max-w-2xl 
+      <div className="relative bg-surface-900 border border-surface-800 rounded-2xl w-full max-w-5xl 
                     shadow-2xl animate-slide-up max-h-[90vh] overflow-hidden flex flex-col">
         {/* Header */}
         <div className="flex items-center justify-between p-6 border-b border-surface-800 bg-surface-900 z-10">
@@ -1367,7 +1652,18 @@ function ViewTicketModal({
         </div>
 
         {/* Content */}
-        <div className="p-6 overflow-y-auto flex-1">
+        <div className="p-6 overflow-y-auto flex-1 space-y-6">
+          <EquipmentReceiptSection
+            ticket={ticket}
+            assets={assets}
+            onTicketPatch={(patch) => setTicket((prev) => ({ ...prev, ...patch }))}
+            onManifestSynced={() => {
+              void getTicketById(ticket.id).then((res) => {
+                if (res.data) setTicket(res.data)
+              })
+            }}
+          />
+
           {activeTab === 'details' ? (
             <div className="space-y-6">
               {/* Estado y Tipo */}
@@ -1474,6 +1770,18 @@ function ViewTicketModal({
                   </p>
                 </div>
               </div>
+
+              {(ticket.xsi_order_number || ticket.epc_order_number) && (
+                <div className="bg-surface-800/50 rounded-xl p-4">
+                  <div className="flex items-center gap-2 text-surface-400 mb-2">
+                    <Hash className="w-4 h-4" />
+                    <span className="text-sm font-medium">Órdenes</span>
+                  </div>
+                  <p className="text-white font-mono font-semibold">
+                    {formatOrderReferences(ticket.xsi_order_number, ticket.epc_order_number)}
+                  </p>
+                </div>
+              )}
 
               {/* Dirección */}
               {ticket.pickup_address && (

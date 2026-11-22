@@ -5,7 +5,12 @@ import { useRouter } from 'next/navigation'
 import Link from 'next/link'
 import { ArrowLeft, Loader2, Plus, Search, Trash2 } from 'lucide-react'
 import { cn } from '@/lib/utils'
-import { searchAssetsForSale, type AssetForSale } from '../../actions'
+import {
+  listRemarketingManufacturers,
+  listRemarketingModelsByManufacturer,
+  searchAssetsForSale,
+  type AssetForSale,
+} from '../../actions'
 import { createQuotation, type QuotationLineInput } from '../actions'
 import {
   QUOTATION_PAYMENT_LABELS,
@@ -13,6 +18,8 @@ import {
   type QuotationRequesterType,
 } from '@/lib/ventas/quotationMeta'
 import { computeQuotationIva, QUOTATION_IVA_RATE } from '@/lib/ventas/quotationIva'
+import { DEFAULT_WARRANTY_DAYS } from '@/lib/ventas/warrantyOptions'
+import WarrantyDaysSelect from '../components/WarrantyDaysSelect'
 
 /** Campos con fondo claro: texto siempre oscuro (evita heredar blanco en dark mode). */
 const inputClass =
@@ -26,12 +33,6 @@ type DraftLine = QuotationLineInput & { key: string }
 
 function roundMoney(n: number): number {
   return Math.round(n * 100) / 100
-}
-
-function assetLabel(a: AssetForSale): string {
-  const parts = [a.manufacturer, a.model].filter(Boolean).join(' ')
-  const sn = a.serial_number ? ` · S/N ${a.serial_number}` : ''
-  return `${parts || a.internal_tag}${sn}`
 }
 
 function lineFromAsset(asset: AssetForSale): DraftLine {
@@ -83,11 +84,20 @@ export default function NuevaCotizacionPage() {
   const [solicitanteContacto, setSolicitanteContacto] = useState('')
   const [paymentMethod, setPaymentMethod] = useState<QuotationPaymentMethod | ''>('')
   const [pricesIncludeIva, setPricesIncludeIva] = useState(false)
+  const [warrantyDays, setWarrantyDays] = useState(DEFAULT_WARRANTY_DAYS)
 
+  const [filterMarca, setFilterMarca] = useState('')
+  const [filterModelo, setFilterModelo] = useState('')
   const [assetQuery, setAssetQuery] = useState('')
   const [assetResults, setAssetResults] = useState<AssetForSale[]>([])
   const [searchingAssets, setSearchingAssets] = useState(false)
+  const [assetSearchError, setAssetSearchError] = useState<string | null>(null)
+  const [marcaOptions, setMarcaOptions] = useState<string[]>([])
+  const [modeloOptions, setModeloOptions] = useState<string[]>([])
+  const [loadingMarcas, setLoadingMarcas] = useState(true)
+  const [loadingModelos, setLoadingModelos] = useState(false)
   const assetDebounce = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const modeloDebounce = useRef<ReturnType<typeof setTimeout> | null>(null)
   const submitLock = useRef(false)
 
   const linesListedTotal = roundMoney(
@@ -95,31 +105,95 @@ export default function NuevaCotizacionPage() {
   )
   const ivaTotals = computeQuotationIva(linesListedTotal, pricesIncludeIva)
 
-  const fetchAssets = useCallback(async (q: string) => {
+  const fetchAssets = useCallback(async () => {
     setSearchingAssets(true)
-    const { data, error: err } = await searchAssetsForSale(q)
-    setSearchingAssets(false)
-    if (err) {
-      setError(err)
+    setAssetSearchError(null)
+    try {
+      const { data, error: err } = await searchAssetsForSale({
+        manufacturer: filterMarca,
+        model: filterModelo,
+        query: assetQuery,
+      })
+      if (err) {
+        setAssetSearchError(err)
+        setAssetResults([])
+        return
+      }
+      const usedAssetIds = new Set(lines.filter((l) => l.asset_id).map((l) => l.asset_id))
+      setAssetResults((data || []).filter((a) => !usedAssetIds.has(a.id)))
+    } catch {
+      setAssetSearchError('No se pudo cargar equipos de Remarketing')
       setAssetResults([])
-      return
+    } finally {
+      setSearchingAssets(false)
     }
-    const usedAssetIds = new Set(lines.filter((l) => l.asset_id).map((l) => l.asset_id))
-    setAssetResults((data || []).filter((a) => !usedAssetIds.has(a.id)))
-  }, [lines])
+  }, [lines, filterMarca, filterModelo, assetQuery])
 
   useEffect(() => {
     if (assetDebounce.current) clearTimeout(assetDebounce.current)
     assetDebounce.current = setTimeout(() => {
-      void fetchAssets(assetQuery)
+      void fetchAssets()
     }, 300)
     return () => {
       if (assetDebounce.current) clearTimeout(assetDebounce.current)
     }
-  }, [assetQuery, fetchAssets])
+  }, [filterMarca, filterModelo, assetQuery, fetchAssets])
+
+  useEffect(() => {
+    let cancelled = false
+    ;(async () => {
+      setLoadingMarcas(true)
+      const { data, error: err } = await listRemarketingManufacturers()
+      if (cancelled) return
+      setLoadingMarcas(false)
+      if (err) {
+        setAssetSearchError(err)
+        setMarcaOptions([])
+        return
+      }
+      setMarcaOptions(data ?? [])
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  useEffect(() => {
+    const marca = filterMarca.trim()
+    if (!marca) {
+      setModeloOptions([])
+      setLoadingModelos(false)
+      return
+    }
+    if (modeloDebounce.current) clearTimeout(modeloDebounce.current)
+    setLoadingModelos(true)
+    modeloDebounce.current = setTimeout(() => {
+      void (async () => {
+        const { data, error: err } = await listRemarketingModelsByManufacturer(marca)
+        setLoadingModelos(false)
+        if (err) {
+          setAssetSearchError(err)
+          setModeloOptions([])
+          return
+        }
+        setModeloOptions(data ?? [])
+        setFilterModelo((prev) => {
+          const p = prev.trim()
+          if (!p) return prev
+          if (!data?.some((m) => m.toLowerCase() === p.toLowerCase())) return ''
+          return prev
+        })
+      })()
+    }, 150)
+    return () => {
+      if (modeloDebounce.current) clearTimeout(modeloDebounce.current)
+    }
+  }, [filterMarca])
 
   const addAssetLine = (asset: AssetForSale) => {
     setLines((prev) => [...prev, lineFromAsset(asset)])
+    setFilterMarca('')
+    setFilterModelo('')
     setAssetQuery('')
     setAssetResults([])
     setError(null)
@@ -162,6 +236,7 @@ export default function NuevaCotizacionPage() {
       solicitante_contacto: solicitanteTipo === 'empresa' ? solicitanteContacto : null,
       payment_method: paymentMethod,
       prices_include_iva: pricesIncludeIva,
+      warranty_days: warrantyDays,
       items,
     })
     setSaving(false)
@@ -225,10 +300,11 @@ export default function NuevaCotizacionPage() {
               </div>
               <div>
                 <label className="block text-xs font-semibold text-gray-600 dark:text-surface-400 mb-1">
-                  Número de teléfono
+                  Número de teléfono *
                 </label>
                 <input
                   type="tel"
+                  required
                   value={clientTelefono}
                   onChange={(e) => setClientTelefono(e.target.value)}
                   className={inputClass}
@@ -259,11 +335,10 @@ export default function NuevaCotizacionPage() {
               </div>
               <div className="sm:col-span-2">
                 <label className="block text-xs font-semibold text-gray-600 dark:text-surface-400 mb-1">
-                  Correo para enviar cotización *
+                  Correo (opcional)
                 </label>
                 <input
                   type="email"
-                  required
                   autoComplete="email"
                   value={clientCorreo}
                   onChange={(e) => setClientCorreo(e.target.value)}
@@ -273,7 +348,7 @@ export default function NuevaCotizacionPage() {
               </div>
             </div>
             <p className="text-[11px] text-gray-500 dark:text-surface-500 mt-2">
-              El cliente se guarda en CRM al crear la cotización. El título se genera automáticamente (número COT-…).
+              El cliente se guarda en CRM al crear la cotización. Identificador: número COT-…
             </p>
           </div>
 
@@ -369,8 +444,58 @@ export default function NuevaCotizacionPage() {
         <div className="rounded-xl border border-gray-200 dark:border-surface-700 bg-white dark:bg-surface-900 p-4 space-y-3">
           <h2 className="text-sm font-bold text-gray-900 dark:text-white">Equipos y montos</h2>
           <p className="text-xs text-gray-500 dark:text-surface-400">
-            Busque en Remarketing por serie, etiqueta o modelo, o agregue una fila manual.
+            Seleccione marca y modelo del stock en Remarketing, o agregue una fila manual.
           </p>
+
+          <div className="grid sm:grid-cols-2 gap-2">
+            <div>
+              <label className="block text-[11px] font-semibold text-gray-600 dark:text-surface-400 mb-1">
+                Marca
+              </label>
+              <select
+                value={filterMarca}
+                onChange={(e) => {
+                  setFilterMarca(e.target.value)
+                  setFilterModelo('')
+                }}
+                className={inputClass}
+                disabled={loadingMarcas}
+              >
+                <option value="">{loadingMarcas ? 'Cargando marcas…' : 'Seleccione marca'}</option>
+                {marcaOptions.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-[11px] font-semibold text-gray-600 dark:text-surface-400 mb-1">
+                Modelo
+              </label>
+              <select
+                value={filterModelo}
+                onChange={(e) => setFilterModelo(e.target.value)}
+                className={cn(inputClass, !filterMarca.trim() && 'opacity-60')}
+                disabled={!filterMarca.trim() || loadingModelos}
+              >
+                <option value="">
+                  {!filterMarca.trim()
+                    ? 'Primero seleccione marca'
+                    : loadingModelos
+                      ? 'Cargando modelos…'
+                      : modeloOptions.length === 0
+                        ? 'Sin modelos para esta marca'
+                        : 'Todos los modelos de la marca'}
+                </option>
+                {modeloOptions.map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
 
           <div className="relative">
             <Search className="absolute left-3 top-2.5 w-4 h-4 text-gray-400" />
@@ -378,34 +503,60 @@ export default function NuevaCotizacionPage() {
               value={assetQuery}
               onChange={(e) => setAssetQuery(e.target.value)}
               className={cn(inputClass, 'pl-9')}
-              placeholder="Buscar equipo en venta (serie, modelo, tag)..."
+              placeholder="Opcional: etiqueta interna o ref. bodega"
             />
           </div>
-          {searchingAssets && (
-            <p className="text-xs text-gray-500 flex items-center gap-1">
-              <Loader2 className="w-3 h-3 animate-spin" /> Cargando equipos...
-            </p>
-          )}
-          {assetResults.length > 0 && (
-            <ul className="border border-gray-200 dark:border-surface-700 rounded-lg divide-y dark:divide-surface-700 max-h-48 overflow-y-auto">
-              {assetResults.map((a) => (
-                <li key={a.id}>
-                  <button
-                    type="button"
-                    onClick={() => addAssetLine(a)}
-                    className="w-full text-left px-3 py-2 text-sm text-gray-900 dark:text-white hover:bg-emerald-50 dark:hover:bg-emerald-500/10"
-                  >
-                    <span className="font-medium">{assetLabel(a)}</span>
-                    {a.sales_price != null && a.sales_price > 0 && (
-                      <span className="text-xs text-emerald-600 ml-2">
-                        Q {a.sales_price.toLocaleString('es-GT')}
-                      </span>
-                    )}
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
+          <div
+            className="border border-gray-200 dark:border-surface-700 rounded-lg min-h-[7.5rem] max-h-56 overflow-y-auto bg-gray-50/50 dark:bg-surface-950/40"
+            aria-live="polite"
+          >
+            {searchingAssets && (
+              <p className="px-3 py-4 text-xs text-gray-500 flex items-center gap-1">
+                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                Cargando equipos en Remarketing…
+              </p>
+            )}
+            {!searchingAssets && assetSearchError && (
+              <p className="px-3 py-4 text-xs text-red-600 dark:text-red-400">{assetSearchError}</p>
+            )}
+            {!searchingAssets && !assetSearchError && assetResults.length === 0 && (
+              <p className="px-3 py-4 text-xs text-gray-500 dark:text-surface-400">
+                {filterMarca.trim() || filterModelo.trim() || assetQuery.trim()
+                  ? 'Sin equipos con esa marca/modelo en Remarketing.'
+                  : 'No hay equipos listos para venta en Remarketing.'}
+              </p>
+            )}
+            {!searchingAssets && !assetSearchError && assetResults.length > 0 && (
+              <>
+                <p className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wide text-gray-500 dark:text-surface-400 border-b border-gray-200 dark:border-surface-700 bg-white dark:bg-surface-900 sticky top-0">
+                  {assetResults.length} equipo{assetResults.length === 1 ? '' : 's'} — clic para agregar
+                </p>
+                <ul className="divide-y divide-gray-200 dark:divide-surface-700">
+                  {assetResults.map((a) => (
+                    <li key={a.id}>
+                      <button
+                        type="button"
+                        onClick={() => addAssetLine(a)}
+                        className="w-full text-left px-3 py-2 text-sm text-gray-900 dark:text-white hover:bg-emerald-50 dark:hover:bg-emerald-500/10"
+                      >
+                        <span className="font-medium uppercase">
+                          {a.manufacturer || '—'}
+                        </span>
+                        <span className="text-gray-600 dark:text-surface-300 ml-1.5 uppercase">
+                          {a.model || a.internal_tag}
+                        </span>
+                        {a.sales_price != null && a.sales_price > 0 && (
+                          <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 ml-2">
+                            Q {a.sales_price.toLocaleString('es-GT')}
+                          </span>
+                        )}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+          </div>
 
           <button
             type="button"
@@ -432,11 +583,10 @@ export default function NuevaCotizacionPage() {
             </p>
           ) : (
             <div className="overflow-x-auto -mx-1">
-              <table className="w-full text-xs sm:text-sm min-w-[640px]">
+              <table className="w-full text-xs sm:text-sm min-w-[560px]">
                 <thead>
                   <tr className="border-b border-gray-200 dark:border-surface-700 text-left text-gray-500">
                     <th className="py-2 pr-2">Descripción</th>
-                    <th className="py-2 pr-2">Serie</th>
                     <th className="py-2 pr-2">Marca / modelo</th>
                     <th className="py-2 pr-2 w-16">Cant.</th>
                     <th className="py-2 pr-2 w-28">
@@ -462,13 +612,6 @@ export default function NuevaCotizacionPage() {
                             onChange={(e) => updateLine(line.key, { description: e.target.value })}
                             className={inputClassSm}
                             placeholder="Descripción"
-                          />
-                        </td>
-                        <td className="py-2 pr-2">
-                          <input
-                            value={line.serial_number || ''}
-                            onChange={(e) => updateLine(line.key, { serial_number: e.target.value })}
-                            className={inputClassSm}
                           />
                         </td>
                         <td className="py-2 pr-2">
@@ -525,7 +668,7 @@ export default function NuevaCotizacionPage() {
                 </tbody>
                 <tfoot className="text-sm">
                   <tr>
-                    <td colSpan={5} className="pt-3 text-right text-gray-600 dark:text-surface-400">
+                    <td colSpan={4} className="pt-3 text-right text-gray-600 dark:text-surface-400">
                       Subtotal (sin IVA)
                     </td>
                     <td className="pt-3 text-right tabular-nums font-medium text-gray-900 dark:text-white">
@@ -534,7 +677,7 @@ export default function NuevaCotizacionPage() {
                     <td />
                   </tr>
                   <tr>
-                    <td colSpan={5} className="pt-1 text-right text-gray-600 dark:text-surface-400">
+                    <td colSpan={4} className="pt-1 text-right text-gray-600 dark:text-surface-400">
                       IVA ({Math.round(QUOTATION_IVA_RATE * 100)}%)
                     </td>
                     <td className="pt-1 text-right tabular-nums font-medium text-gray-900 dark:text-white">
@@ -543,7 +686,7 @@ export default function NuevaCotizacionPage() {
                     <td />
                   </tr>
                   <tr>
-                    <td colSpan={5} className="pt-2 pb-1 text-right font-bold text-gray-800 dark:text-surface-200">
+                    <td colSpan={4} className="pt-2 pb-1 text-right font-bold text-gray-800 dark:text-surface-200">
                       Total cotización (con IVA)
                     </td>
                     <td className="pt-2 pb-1 text-right font-extrabold text-emerald-600 tabular-nums">
@@ -557,7 +700,9 @@ export default function NuevaCotizacionPage() {
           )}
         </div>
 
-        <div className="rounded-xl border border-gray-200 dark:border-surface-700 bg-white dark:bg-surface-900 p-4">
+        <div className="rounded-xl border border-gray-200 dark:border-surface-700 bg-white dark:bg-surface-900 p-4 space-y-4">
+          <WarrantyDaysSelect value={warrantyDays} onChange={setWarrantyDays} />
+          <div>
           <label className="block text-sm font-semibold text-gray-800 dark:text-surface-200 mb-1">
             Notas generales
           </label>
@@ -568,6 +713,7 @@ export default function NuevaCotizacionPage() {
             className={textareaClass}
             placeholder="Condiciones comerciales, vigencia, etc."
           />
+          </div>
         </div>
 
         <button

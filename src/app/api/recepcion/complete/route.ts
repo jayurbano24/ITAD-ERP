@@ -10,9 +10,17 @@ export async function POST(request: Request) {
   try {
     const body = (await request.json()) as {
       ticketId?: string
+      allowPartial?: boolean
+      missingNotes?: string
+      additionalNotes?: string
+      generalNotes?: string
     }
 
     const ticketId = body.ticketId?.trim() || ''
+    const allowPartial = body.allowPartial !== false
+    const missingNotes = (body.missingNotes || '').trim()
+    const additionalNotes = (body.additionalNotes || '').trim()
+    const generalNotes = (body.generalNotes || '').trim()
     if (!ticketId) {
       return NextResponse.json({ error: 'ticketId es requerido' }, { status: 400 })
     }
@@ -23,7 +31,7 @@ export async function POST(request: Request) {
 
     const { data: ticket, error: ticketError } = await supabase
       .from('operations_tickets')
-      .select('id, readable_id, status, expected_units, description, title')
+      .select('id, readable_id, status, expected_units, description, title, xsi_order_number, epc_order_number')
       .eq('id', ticketId)
       .maybeSingle()
 
@@ -50,12 +58,54 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: 'El ticket no tiene equipos para completar' }, { status: 400 })
     }
 
-    const missingSerial = rows.filter((row) => !(row.collected_serial || '').trim())
-    if (missingSerial.length > 0) {
+    const isAdditionalItem = (meta: Record<string, unknown>) => Boolean(meta.additional)
+
+    const withSerial = rows.filter((row) => (row.collected_serial || '').trim())
+    const missingExpected = rows.filter((row) => {
+      const meta = (row.reception_metadata || {}) as Record<string, unknown>
+      return !isAdditionalItem(meta) && !(row.collected_serial || '').trim()
+    })
+    const additionalWithSerial = withSerial.filter((row) => {
+      const meta = (row.reception_metadata || {}) as Record<string, unknown>
+      return isAdditionalItem(meta)
+    })
+    const additionalEmpty = rows.filter((row) => {
+      const meta = (row.reception_metadata || {}) as Record<string, unknown>
+      return isAdditionalItem(meta) && !(row.collected_serial || '').trim()
+    })
+
+    if (withSerial.length === 0) {
+      return NextResponse.json(
+        { error: 'Debe registrar al menos una serie antes de completar' },
+        { status: 400 }
+      )
+    }
+
+    if (!allowPartial && missingExpected.length > 0) {
       return NextResponse.json(
         {
-          error: `Faltan ${missingSerial.length} serie(s) por registrar antes de completar`,
-          missingSerial: missingSerial.length,
+          error: `Faltan ${missingExpected.length} serie(s) del recibo antes de completar`,
+          missingSerial: missingExpected.length,
+        },
+        { status: 400 }
+      )
+    }
+
+    if (missingExpected.length > 0 && !missingNotes) {
+      return NextResponse.json(
+        {
+          error: 'Indique comentarios sobre los equipos faltantes del Receipt of Equipment',
+          missingExpected: missingExpected.length,
+        },
+        { status: 400 }
+      )
+    }
+
+    if (additionalWithSerial.length > 0 && !additionalNotes) {
+      return NextResponse.json(
+        {
+          error: 'Indique comentarios sobre los equipos adicionales recibidos',
+          additionalReceived: additionalWithSerial.length,
         },
         { status: 400 }
       )
@@ -78,6 +128,42 @@ export async function POST(request: Request) {
     }
 
     // Lote del ticket
+    const now = new Date().toISOString()
+
+    if (additionalEmpty.length > 0) {
+      const { error: deleteEmptyError } = await supabase
+        .from('ticket_items')
+        .delete()
+        .in(
+          'id',
+          additionalEmpty.map((r) => r.id)
+        )
+      if (deleteEmptyError) {
+        return NextResponse.json({ error: deleteEmptyError.message }, { status: 500 })
+      }
+    }
+
+    if (missingExpected.length > 0) {
+      for (const item of missingExpected) {
+        const meta = (item.reception_metadata || {}) as Record<string, unknown>
+        const { error: markError } = await supabase
+          .from('ticket_items')
+          .update({
+            validation_status: 'FALTANTE',
+            reception_metadata: {
+              ...meta,
+              missing_at: now,
+              closure_missing_notes: missingNotes,
+            },
+            updated_at: now,
+          })
+          .eq('id', item.id)
+        if (markError) {
+          return NextResponse.json({ error: markError.message }, { status: 500 })
+        }
+      }
+    }
+
     let batchId: string | null = null
     const { data: existingBatch } = await supabase
       .from('batches')
@@ -93,7 +179,7 @@ export async function POST(request: Request) {
         .from('batches')
         .update({
           status: 'received',
-          received_units: rows.length,
+          received_units: withSerial.length,
           reception_date: new Date().toISOString(),
           updated_at: new Date().toISOString(),
         })
@@ -106,7 +192,7 @@ export async function POST(request: Request) {
           ticket_id: ticketId,
           status: 'received',
           expected_units: Number(ticket.expected_units ?? rows.length),
-          received_units: rows.length,
+          received_units: withSerial.length,
           reception_date: new Date().toISOString(),
           pallet_count: 1,
           received_by: userId,
@@ -121,11 +207,13 @@ export async function POST(request: Request) {
     }
 
     let movedAssets = 0
-    const now = new Date().toISOString()
+    const xsiStored = (ticket as { xsi_order_number?: string | null }).xsi_order_number?.trim()
     const orderMatch = `${ticket.description || ''} ${ticket.title || ''}`.match(/\b(ORD\s*[-]?\s*\d{4,})\b/i)
-    const sourceOrderNumber = orderMatch?.[1]
-      ? orderMatch[1].replace(/\s+/g, '').replace(/ORD-/i, 'ORD').toUpperCase()
-      : null
+    const sourceOrderNumber = xsiStored
+      ? xsiStored.replace(/\s+/g, '').toUpperCase()
+      : orderMatch?.[1]
+        ? orderMatch[1].replace(/\s+/g, '').replace(/ORD-/i, 'ORD').toUpperCase()
+        : null
 
     // Preferir ORD de la foto como identificador de lote
     if (batchId && sourceOrderNumber) {
@@ -138,7 +226,7 @@ export async function POST(request: Request) {
         .eq('id', batchId)
     }
 
-    for (const item of rows) {
+    for (const item of withSerial) {
       const serial = (item.collected_serial || '').trim().toUpperCase()
       const meta = (item.reception_metadata || {}) as Record<string, unknown>
       const specs = {
@@ -156,10 +244,18 @@ export async function POST(request: Request) {
           keyboard_type: meta.keyboard_type || null,
           keyboard_version: meta.keyboard_version || null,
           bios_version: meta.bios_version || null,
+          screen_size: (meta.screen_size as string) || null,
         },
         reception_notes: meta.observations || null,
+        reception_test: {
+          battery: (meta.battery as string) || null,
+          charger: (meta.charger as string) || null,
+          memory: (meta.memory as string) || 'Pass',
+          test_date: (meta.captured_at as string) || now,
+        },
         ticket_readable_id: ticket.readable_id,
         source_order_number: sourceOrderNumber,
+        project_number: sourceOrderNumber,
       }
 
       let assetId = item.asset_id as string | null
@@ -280,6 +376,24 @@ export async function POST(request: Request) {
       movedAssets += 1
     }
 
+    const ticketNotesPatch: Record<string, unknown> = {
+      reception_missing_notes: missingNotes || null,
+      reception_additional_notes: additionalNotes || null,
+      updated_at: now,
+    }
+    if (generalNotes) {
+      const { data: current } = await supabase
+        .from('operations_tickets')
+        .select('equipment_receipt_notes')
+        .eq('id', ticketId)
+        .maybeSingle()
+      const prev = (current as { equipment_receipt_notes?: string | null } | null)?.equipment_receipt_notes?.trim() || ''
+      const merged = prev ? `${prev}\n\n[Recepción ${now.slice(0, 10)}]\n${generalNotes}` : generalNotes
+      ticketNotesPatch.equipment_receipt_notes = merged
+    }
+
+    await supabase.from('operations_tickets').update(ticketNotesPatch).eq('id', ticketId)
+
     if (ticket.status !== 'completed' && ticket.status !== 'closed') {
       const { error: updateError } = await supabase
         .from('operations_tickets')
@@ -300,7 +414,9 @@ export async function POST(request: Request) {
       ok: true,
       readableId: ticket.readable_id,
       status: 'completed',
-      itemCount: rows.length,
+      itemCount: withSerial.length,
+      missingExpected: missingExpected.length,
+      additionalReceived: additionalWithSerial.length,
       movedAssets,
       warehouseCode: warehouse.code,
       warehouseName: warehouse.name || 'Bodega Recepción',

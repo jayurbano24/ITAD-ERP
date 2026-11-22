@@ -1,6 +1,6 @@
 'use client'
 
-import { useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import Link from 'next/link'
 import {
   Upload,
@@ -19,12 +19,15 @@ import { cn } from '@/lib/utils'
 type CertificateSummary = {
   marca: string | null
   modelo: string | null
+  modeloMtm?: string | null
   serie: string | null
+  serieDisco: string | null
   borrado: boolean | null
   estadoBorrado: string | null
   certificadoId: string | null
   software: string | null
   capacidadDisco: string | null
+  memoriaRam: string | null
   metodo: string | null
   fecha: string | null
 }
@@ -56,15 +59,49 @@ type Totals = {
 
 const MAX_FILES = 50
 
+type WipeProject = {
+  ordCode: string
+  batchId: string
+  assetCount: number
+  withPdfCount: number
+  pendingPdfCount: number
+  customerName: string | null
+}
+
 export function CertificateIntake() {
   const inputRef = useRef<HTMLInputElement>(null)
   const [dragging, setDragging] = useState(false)
   const [loading, setLoading] = useState(false)
+  const [loadingProjects, setLoadingProjects] = useState(true)
+  const [projects, setProjects] = useState<WipeProject[]>([])
+  const [selectedOrd, setSelectedOrd] = useState('')
   const [progress, setProgress] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [pendingCount, setPendingCount] = useState(0)
   const [results, setResults] = useState<BatchRow[]>([])
   const [totals, setTotals] = useState<Totals | null>(null)
+
+  const loadProjects = useCallback(async () => {
+    try {
+      setLoadingProjects(true)
+      const res = await fetch('/api/wipe/projects', { cache: 'no-store' })
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error || 'No se pudieron cargar proyectos')
+      const list = (json.projects || []) as WipeProject[]
+      setProjects(list)
+      setSelectedOrd((prev) => prev || list[0]?.ordCode || '')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Error al cargar proyectos ORD')
+    } finally {
+      setLoadingProjects(false)
+    }
+  }, [])
+
+  useEffect(() => {
+    void loadProjects()
+  }, [loadProjects])
+
+  const selectedProject = projects.find((p) => p.ordCode === selectedOrd) ?? null
 
   const reset = () => {
     setError(null)
@@ -80,6 +117,10 @@ export function CertificateIntake() {
       (f) => f.type === 'application/pdf' || f.name.toLowerCase().endsWith('.pdf')
     )
 
+    if (!selectedOrd) {
+      setError('Seleccione primero el proyecto ORD')
+      return
+    }
     if (files.length === 0) {
       setError('Selecciona al menos un PDF de certificado Blancco / WipeDrive')
       return
@@ -98,6 +139,7 @@ export function CertificateIntake() {
 
     try {
       const form = new FormData()
+      form.set('projectOrd', selectedOrd)
       for (const file of files) {
         form.append('files', file)
       }
@@ -114,6 +156,7 @@ export function CertificateIntake() {
       setResults((json.results || []) as BatchRow[])
       setTotals((json.totals || null) as Totals | null)
       setProgress(null)
+      void loadProjects()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error al procesar el lote')
       setProgress(null)
@@ -129,6 +172,10 @@ export function CertificateIntake() {
   const onDrop = (e: React.DragEvent) => {
     e.preventDefault()
     setDragging(false)
+    if (!selectedOrd) {
+      setError('Seleccione primero el proyecto ORD')
+      return
+    }
     if (e.dataTransfer.files?.length) void processFiles(e.dataTransfer.files)
   }
 
@@ -144,8 +191,9 @@ export function CertificateIntake() {
               Captura de certificados (lote / ETL)
             </h3>
             <p className="text-sm text-gray-600 dark:text-gray-400">
-              Sube varios PDF Blancco: se lee Marca, Modelo, Serie, si fue borrado y se arma la
-              evidencia en el activo (hasta {MAX_FILES} por lote)
+              Elija el <strong className="text-violet-600 dark:text-violet-400">proyecto ORD</strong>,
+              luego suba los PDF Blancco: se cruza por serie solo dentro de ese lote (hasta{' '}
+              {MAX_FILES} por envío).
             </p>
           </div>
         </div>
@@ -158,6 +206,45 @@ export function CertificateIntake() {
             <RefreshCw className="w-3.5 h-3.5" />
             Nuevo lote
           </button>
+        )}
+      </div>
+
+      <div className="rounded-xl border border-violet-200 dark:border-violet-800/60 bg-violet-50/60 dark:bg-violet-950/20 p-4 space-y-2">
+        <label className="block text-[10px] font-black uppercase tracking-widest text-violet-700 dark:text-violet-300">
+          Proyecto (ORD)
+        </label>
+        {loadingProjects ? (
+          <p className="text-sm text-gray-500">Cargando órdenes…</p>
+        ) : projects.length === 0 ? (
+          <p className="text-sm text-amber-700 dark:text-amber-300">
+            No hay lotes ORD con equipos en inventario. Reciba un ticket con ORD en Bodega
+            Recepción primero.
+          </p>
+        ) : (
+          <>
+            <select
+              value={selectedOrd}
+              onChange={(e) => setSelectedOrd(e.target.value)}
+              className="w-full max-w-md rounded-xl border-2 border-violet-300 dark:border-violet-700 bg-white dark:bg-[#0f1419] px-3 py-2.5 text-sm font-bold text-gray-900 dark:text-white"
+            >
+              {projects.map((p) => (
+                <option key={p.ordCode} value={p.ordCode}>
+                  {p.ordCode}
+                  {p.customerName ? ` · ${p.customerName}` : ''} — {p.assetCount} equipos ·{' '}
+                  {p.pendingPdfCount} sin PDF
+                </option>
+              ))}
+            </select>
+            {selectedProject && (
+              <p className="text-xs text-gray-600 dark:text-gray-400">
+                {selectedProject.pendingPdfCount} certificado(s) pendiente(s) de{' '}
+                {selectedProject.assetCount} en {selectedProject.ordCode}
+                {selectedProject.withPdfCount > 0
+                  ? ` (${selectedProject.withPdfCount} PDF ya cargados)`
+                  : ''}
+              </p>
+            )}
+          </>
         )}
       </div>
 
@@ -199,13 +286,14 @@ export function CertificateIntake() {
             </p>
             <button
               type="button"
+              disabled={!selectedOrd || projects.length === 0}
               onClick={() => inputRef.current?.click()}
-              className="px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-black uppercase tracking-widest"
+              className="px-4 py-2 rounded-xl bg-violet-600 hover:bg-violet-500 text-white text-xs font-black uppercase tracking-widest disabled:opacity-40"
             >
               Subir lote de certificados
             </button>
             <p className="text-[11px] text-gray-500">
-              Máx. {MAX_FILES} PDF · 10 MB c/u · se cruza por serie con inventario
+              Máx. {MAX_FILES} PDF · 10 MB c/u · solo series del ORD seleccionado
             </p>
           </div>
         )}
@@ -269,16 +357,40 @@ export function CertificateIntake() {
                     </div>
                   </td>
                   <td className="px-3 py-2 font-bold">{row.summary?.marca || '—'}</td>
-                  <td className="px-3 py-2">{row.summary?.modelo || '—'}</td>
+                  <td
+                    className="px-3 py-2"
+                    title={
+                      [
+                        row.summary?.modeloMtm ? `MTM: ${row.summary.modeloMtm}` : null,
+                        row.summary?.capacidadDisco ? `Disco: ${row.summary.capacidadDisco}` : null,
+                        row.summary?.serieDisco ? `SN disco: ${row.summary.serieDisco}` : null,
+                        row.summary?.memoriaRam ? `RAM: ${row.summary.memoriaRam}` : null,
+                      ]
+                        .filter(Boolean)
+                        .join(' · ') || undefined
+                    }
+                  >
+                    {row.summary?.modelo || '—'}
+                  </td>
                   <td className="px-3 py-2 font-mono">{row.summary?.serie || '—'}</td>
                   <td className="px-3 py-2">
-                    {row.summary?.borrado === true ? (
-                      <span className="inline-flex items-center gap-1 text-emerald-600 dark:text-emerald-400 font-bold">
-                        <CheckCircle2 className="w-3.5 h-3.5" /> Sí
-                      </span>
-                    ) : row.summary?.borrado === false ? (
-                      <span className="inline-flex items-center gap-1 text-rose-600 dark:text-rose-400 font-bold">
-                        <XCircle className="w-3.5 h-3.5" /> No
+                    {row.summary?.estadoBorrado ? (
+                      <span
+                        className={cn(
+                          'inline-flex items-center gap-1 font-bold',
+                          row.summary.borrado === true
+                            ? 'text-emerald-600 dark:text-emerald-400'
+                            : row.summary.borrado === false
+                              ? 'text-rose-600 dark:text-rose-400'
+                              : 'text-gray-500'
+                        )}
+                      >
+                        {row.summary.borrado === true ? (
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                        ) : row.summary.borrado === false ? (
+                          <XCircle className="w-3.5 h-3.5" />
+                        ) : null}
+                        {row.summary.estadoBorrado}
                       </span>
                     ) : (
                       '—'

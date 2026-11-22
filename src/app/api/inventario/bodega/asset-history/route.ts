@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { createClient } from '@/lib/supabase/server'
+import { resolveSerialLookup } from '@/lib/inventario/resolveSerialLookup'
 
 /**
  * Historial de un activo para el modal de Bodega.
@@ -17,20 +18,23 @@ export async function GET(req: Request) {
 
     const supabase = await createClient()
 
-    const { data: assets, error: assetError } = await supabase
+    const resolved = await resolveSerialLookup(supabase, serial)
+    if (!resolved?.assetId) {
+      return NextResponse.json({ error: 'Activo no encontrado para esa serie o sufijo' }, { status: 404 })
+    }
+
+    const { data: asset, error: assetError } = await supabase
       .from('assets')
       .select('id, serial_number, internal_tag, status, current_warehouse_id, created_at, updated_at, last_transfer_date')
-      .or(`serial_number.eq.${serial},internal_tag.eq.${serial}`)
-      .limit(1)
+      .eq('id', resolved.assetId)
+      .maybeSingle()
 
     if (assetError) {
       return NextResponse.json({ error: assetError.message }, { status: 500 })
     }
-    if (!assets?.length) {
+    if (!asset) {
       return NextResponse.json({ error: 'Activo no encontrado' }, { status: 404 })
     }
-
-    const asset = assets[0]
 
     // Work orders (puede no haber ninguna aún)
     const { data: workOrders } = await supabase

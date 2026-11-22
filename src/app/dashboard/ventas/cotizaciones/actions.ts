@@ -12,6 +12,7 @@ import {
   computeQuotationTotalsWithDiscount,
   listedTotalFromItems,
 } from '@/lib/ventas/quotationIva'
+import { clampWarrantyDays, DEFAULT_WARRANTY_DAYS } from '@/lib/ventas/warrantyOptions'
 
 export type QuotationStatus =
   | 'pendiente_aprobacion'
@@ -47,6 +48,8 @@ export interface SalesQuotation {
   discount_percent?: number | null
   discount_amount?: number | null
   discount_note?: string | null
+  /** Vigencia para anexo de política de garantía (días) */
+  warranty_days?: number | null
   customer?: {
     id: string
     commercial_name: string
@@ -106,6 +109,10 @@ export interface QuotationComment {
 const BUCKET = 'sales-quotation-attachments'
 const LIST_PATH = '/dashboard/ventas/cotizaciones'
 
+function sanitizeQuotationSearchToken(value: string): string {
+  return value.replace(/[%_,]/g, ' ').replace(/\s+/g, ' ').trim()
+}
+
 export async function getQuotations(options?: {
   status?: string
   search?: string
@@ -126,11 +133,30 @@ export async function getQuotations(options?: {
     query = query.eq('status', options.status)
   }
 
-  const search = (options?.search || '').trim()
-  if (search.length >= 2) {
-    query = query.or(
-      `quote_number.ilike.%${search}%,title.ilike.%${search}%,description.ilike.%${search}%`
-    )
+  const search = sanitizeQuotationSearchToken(options?.search || '')
+  if (search.length >= 1) {
+    const pattern = `%${search}%`
+
+    const { data: customerRows } = await supabase
+      .from('crm_entities')
+      .select('id')
+      .or(
+        `commercial_name.ilike.${pattern},legal_name.ilike.${pattern},tax_id_nit.ilike.${pattern},phone.ilike.${pattern}`
+      )
+      .limit(150)
+
+    const customerIds = (customerRows ?? []).map((row) => row.id as string)
+
+    const filters = [
+      `quote_number.ilike.${pattern}`,
+      `solicitante_empresa.ilike.${pattern}`,
+      `solicitante_contacto.ilike.${pattern}`,
+    ]
+    if (customerIds.length > 0) {
+      filters.push(`customer_id.in.(${customerIds.join(',')})`)
+    }
+
+    query = query.or(filters.join(','))
   }
 
   const { data, error } = await query
@@ -210,7 +236,7 @@ export type QuotationClientInput = {
   telefono?: string | null
   nit?: string | null
   direccion?: string | null
-  correo: string
+  correo?: string | null
 }
 
 export async function createQuotation(input: {
@@ -221,6 +247,7 @@ export async function createQuotation(input: {
   solicitante_contacto?: string | null
   payment_method: QuotationPaymentMethod
   prices_include_iva: boolean
+  warranty_days?: number
   items: QuotationLineInput[]
 }) {
   const supabase = await createClient()
@@ -237,13 +264,18 @@ export async function createQuotation(input: {
     return { success: false, error: 'El apellido del cliente es requerido' }
   }
 
-  const correo = input.client.correo.trim().toLowerCase()
-  if (!correo) {
-    return { success: false, error: 'El correo para enviar la cotización es requerido' }
+  const telefono = input.client.telefono?.trim() || ''
+  if (!telefono) {
+    return { success: false, error: 'El número de teléfono del cliente es requerido' }
   }
-  const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correo)
-  if (!emailOk) {
-    return { success: false, error: 'Ingrese un correo electrónico válido' }
+
+  const correoRaw = (input.client.correo || '').trim().toLowerCase()
+  const correo = correoRaw || null
+  if (correo) {
+    const emailOk = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correo)
+    if (!emailOk) {
+      return { success: false, error: 'Ingrese un correo electrónico válido' }
+    }
   }
 
   const commercial_name = `${nombre} ${apellido}`.replace(/\s+/g, ' ').trim()
@@ -251,7 +283,7 @@ export async function createQuotation(input: {
     commercial_name,
     legal_name: apellido,
     tax_id_nit: input.client.nit?.trim() || 'CF',
-    phone: input.client.telefono?.trim() || null,
+    phone: telefono,
     address: input.client.direccion?.trim() || null,
     email: correo,
   })
@@ -360,7 +392,7 @@ export async function createQuotation(input: {
     if (
       Number(row.amount) === total &&
       row.payment_method === payment_method &&
-      (row.recipient_email || '').toLowerCase() === correo
+      (row.recipient_email || '').toLowerCase() === (correo || '')
     ) {
       const existingLines = (row.items || []).map((l) => ({
         serial_number: l.serial_number,
@@ -398,6 +430,7 @@ export async function createQuotation(input: {
       solicitante_empresa,
       solicitante_contacto,
       payment_method,
+      warranty_days: clampWarrantyDays(input.warranty_days ?? DEFAULT_WARRANTY_DAYS),
       recipient_email: correo,
       status: 'pendiente_aprobacion',
       created_by: user?.id ?? null,
@@ -622,6 +655,27 @@ export async function updateQuotationDiscount(
       subtotal: totals.subtotal,
       tax_amount: totals.tax_amount,
       amount: totals.total,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', quotationId)
+
+  if (error) {
+    return { success: false, error: error.message }
+  }
+
+  revalidatePath(LIST_PATH)
+  revalidatePath(`${LIST_PATH}/${quotationId}`)
+  return { success: true }
+}
+
+export async function updateQuotationWarrantyDays(quotationId: string, warrantyDays: number) {
+  const supabase = await createClient()
+  const days = clampWarrantyDays(warrantyDays)
+
+  const { error } = await supabase
+    .from('sales_quotations')
+    .update({
+      warranty_days: days,
       updated_at: new Date().toISOString(),
     })
     .eq('id', quotationId)

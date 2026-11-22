@@ -14,10 +14,14 @@ import {
 import { cn } from '@/lib/utils'
 import ExcelColumnFilter from '@/app/dashboard/inventario/bodega/components/ExcelColumnFilter'
 import DownloadWarrantyButton from './DownloadWarrantyButton'
+import SalePolicyCommentCell from './SalePolicyCommentCell'
+import SaleTotalEditCell from './SaleTotalEditCell'
 import DownloadSalesExcelButton from './DownloadSalesExcelButton'
+import DownloadSalesAdvancedExcelButton from './DownloadSalesAdvancedExcelButton'
 import SatInvoiceEditCell from './SatInvoiceEditCell'
 import { formatSaleStatusLabel, formatSalesChannel } from '@/lib/ventas/salesChannel'
 import type { SalesExcelRow } from '@/lib/ventas/exportSalesExcel'
+import { saleOrderToAdvancedExcelRow } from '@/lib/ventas/exportSalesAdvancedExcel'
 import type { SaleExchangeRecord, SaleSerialSearchHint } from './actions'
 
 export type SalesHistoryOrder = {
@@ -35,6 +39,13 @@ export type SalesHistoryOrder = {
   customer?: {
     commercial_name?: string | null
     tax_id_nit?: string | null
+    is_iva_withholding_agent?: boolean | null
+  } | null
+  fiscal_withholding?: {
+    isWithholdingAgent: boolean
+    withholdingRate: number
+    ivaWithholdingAmount: number
+    netAfterIvaWithholding: number
   } | null
   sales_rep?: { full_name?: string | null } | null
   items?: Array<{
@@ -171,6 +182,9 @@ function toExcelRow(order: SalesHistoryOrder): SalesExcelRow {
   const invoice = formatInvoiceLabel(order.invoice_number)
   const sat = formatSatInvoiceLabel(order.sat_invoice_number)
 
+  const fiscal = order.fiscal_withholding
+  const isAgent = fiscal?.isWithholdingAgent ?? false
+
   return {
     createdAt: new Date(order.created_at).toLocaleString('es-GT'),
     customerName: order.customer?.commercial_name || 'N/A',
@@ -184,6 +198,11 @@ function toExcelRow(order: SalesHistoryOrder): SalesExcelRow {
     subtotal: Number(order.subtotal || 0),
     taxAmount: Number(order.tax_amount || 0),
     totalAmount: Number(order.total_amount || 0),
+    isWithholdingAgent: isAgent,
+    withholdingRate: fiscal?.withholdingRate ?? 0.15,
+    ivaWithholdingAmount: fiscal?.ivaWithholdingAmount ?? 0,
+    netAfterIvaWithholding:
+      fiscal?.netAfterIvaWithholding ?? Number(order.total_amount || 0),
     status: formatSaleStatusLabel(order.status),
     salesRep,
   }
@@ -200,18 +219,35 @@ export default function SalesHistoryTable({
   const [columnFilters, setColumnFilters] = useState<Record<string, Set<string> | null>>({})
   const [sort, setSort] = useState<{ columnId: ColumnId; dir: 'asc' | 'desc' } | null>(null)
   const [satOverrides, setSatOverrides] = useState<Record<string, string | null>>({})
+  const [notesOverrides, setNotesOverrides] = useState<Record<string, string | null>>({})
+  const [totalOverrides, setTotalOverrides] = useState<
+    Record<string, { total_amount: number; subtotal: number; tax_amount: number }>
+  >({})
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set())
   const [page, setPage] = useState(1)
   const headerCheckboxRef = useRef<HTMLInputElement>(null)
 
   const mergedOrders = useMemo(
     () =>
-      orders.map((order) =>
-        order.id in satOverrides
-          ? { ...order, sat_invoice_number: satOverrides[order.id] }
-          : order
-      ),
-    [orders, satOverrides]
+      orders.map((order) => {
+        let next = order
+        if (order.id in satOverrides) {
+          next = { ...next, sat_invoice_number: satOverrides[order.id] }
+        }
+        if (order.id in notesOverrides) {
+          next = { ...next, customer_notes: notesOverrides[order.id] }
+        }
+        if (order.id in totalOverrides) {
+          next = {
+            ...next,
+            total_amount: totalOverrides[order.id].total_amount,
+            subtotal: totalOverrides[order.id].subtotal,
+            tax_amount: totalOverrides[order.id].tax_amount,
+          }
+        }
+        return next
+      }),
+    [orders, satOverrides, notesOverrides, totalOverrides]
   )
 
   const setColumnFilter = useCallback((columnId: string, next: Set<string> | null) => {
@@ -311,13 +347,21 @@ export default function SalesHistoryTable({
 
   const clearSelection = useCallback(() => setSelectedIds(new Set()), [])
 
-  const excelRows = useMemo(() => {
-    const source =
-      selectedCount > 0
-        ? filteredOrders.filter((o) => selectedIds.has(o.id))
-        : filteredOrders
-    return source.map(toExcelRow)
+  const excelExportOrders = useMemo(() => {
+    return selectedCount > 0
+      ? filteredOrders.filter((o) => selectedIds.has(o.id))
+      : filteredOrders
   }, [filteredOrders, selectedIds, selectedCount])
+
+  const excelRows = useMemo(
+    () => excelExportOrders.map(toExcelRow),
+    [excelExportOrders]
+  )
+
+  const advancedExcelRows = useMemo(
+    () => excelExportOrders.map(saleOrderToAdvancedExcelRow),
+    [excelExportOrders]
+  )
 
   const options = useMemo(
     () => ({
@@ -388,6 +432,14 @@ export default function SalesHistoryTable({
               selectedCount > 0
                 ? `Exportar ${selectedCount} seleccionada${selectedCount === 1 ? '' : 's'}`
                 : 'Exportar listado filtrado'
+            }
+          />
+          <DownloadSalesAdvancedExcelButton
+            rows={advancedExcelRows}
+            exportHint={
+              selectedCount > 0
+                ? `Avanzado: ${selectedCount} venta(s) — Visacuota y neto`
+                : 'Avanzado: filtro actual — comisión Visacuota y neto'
             }
           />
         </div>
@@ -528,13 +580,16 @@ export default function SalesHistoryTable({
                               </p>
                             ) : null}
                           </Link>
-                          <span className="text-emerald-700 dark:text-emerald-400 font-black text-base tabular-nums shrink-0">
-                            Q
-                            {(order.total_amount || 0).toLocaleString('es-GT', {
-                              minimumFractionDigits: 2,
-                              maximumFractionDigits: 2,
-                            })}
-                          </span>
+                          <div className="shrink-0">
+                            <SaleTotalEditCell
+                              orderId={order.id}
+                              value={order.total_amount}
+                              disabled={order.status === 'cancelled'}
+                              onSaved={(next) =>
+                                setTotalOverrides((prev) => ({ ...prev, [order.id]: next }))
+                              }
+                            />
+                          </div>
                         </div>
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-3 gap-y-1.5 text-xs">
                           <div>
@@ -644,7 +699,14 @@ export default function SalesHistoryTable({
                               <Banknote className="w-3.5 h-3.5 shrink-0" />
                               Devolver
                             </Link>
-                            <div className="flex items-center justify-center sm:justify-start">
+                            <div className="flex flex-col gap-1 min-w-[6.5rem] sm:min-w-[7rem]">
+                              <SalePolicyCommentCell
+                                orderId={order.id}
+                                value={order.customer_notes}
+                                onSaved={(next) =>
+                                  setNotesOverrides((prev) => ({ ...prev, [order.id]: next }))
+                                }
+                              />
                               <DownloadWarrantyButton orderId={order.id} compact />
                             </div>
                           </div>
@@ -871,13 +933,14 @@ export default function SalesHistoryTable({
                         )}
                       </td>
                       <td className="px-3 py-2 text-right tabular-nums">
-                        <span className="text-emerald-700 dark:text-emerald-400 font-black text-sm">
-                          Q
-                          {(order.total_amount || 0).toLocaleString('es-GT', {
-                            minimumFractionDigits: 2,
-                            maximumFractionDigits: 2,
-                          })}
-                        </span>
+                        <SaleTotalEditCell
+                          orderId={order.id}
+                          value={order.total_amount}
+                          disabled={order.status === 'cancelled'}
+                          onSaved={(next) =>
+                            setTotalOverrides((prev) => ({ ...prev, [order.id]: next }))
+                          }
+                        />
                       </td>
                       <td className="px-3 py-2 text-center">
                         <span
@@ -934,8 +997,17 @@ export default function SalesHistoryTable({
                           </Link>
                         </div>
                       </td>
-                      <td className="px-3 py-2 text-right">
-                        <DownloadWarrantyButton orderId={order.id} compact />
+                      <td className="px-2 py-1.5 text-right align-middle">
+                        <div className="flex flex-col gap-1 items-stretch min-w-[92px]">
+                          <SalePolicyCommentCell
+                            orderId={order.id}
+                            value={order.customer_notes}
+                            onSaved={(next) =>
+                              setNotesOverrides((prev) => ({ ...prev, [order.id]: next }))
+                            }
+                          />
+                          <DownloadWarrantyButton orderId={order.id} compact className="w-full" />
+                        </div>
                       </td>
                     </tr>
                   )

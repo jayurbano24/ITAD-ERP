@@ -136,7 +136,7 @@ export const menuItems: MenuItem[] = [
     submenu: [
       { label: 'Usuarios y Roles', href: '/dashboard/configuracion/usuarios', icon: Users },
       { label: 'Plantillas PDF', href: '/dashboard/configuracion/plantillas', icon: FileText },
-      { label: 'General', href: '/dashboard/configuracion', icon: Settings },
+      { label: 'General', href: '/dashboard/configuracion/general', icon: Settings },
     ]
   },
 ]

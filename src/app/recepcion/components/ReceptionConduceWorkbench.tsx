@@ -8,6 +8,8 @@ import { cn } from '@/lib/utils'
 export type PitoleoUnit = {
   id: string
   serie: string
+  expectedSerial?: string
+  isAdditional?: boolean
 }
 
 export type PitoleoProductLine = {
@@ -40,6 +42,7 @@ type Props = {
   inputsDisabled?: boolean
   showCompleteFooter?: boolean
   allSeriesComplete?: boolean
+  canCompleteTicket?: boolean
   completingTicket?: boolean
   onCompleteTicket?: () => void
   onSaveLineQuantity?: (lineKey: string, quantity: number) => Promise<string | null>
@@ -67,6 +70,7 @@ export default function ReceptionConduceWorkbench({
   inputsDisabled,
   showCompleteFooter,
   allSeriesComplete,
+  canCompleteTicket,
   completingTicket,
   onCompleteTicket,
   onSaveLineQuantity,
@@ -215,9 +219,9 @@ export default function ReceptionConduceWorkbench({
                             : 'hover:bg-gray-50/90 dark:hover:bg-surface-950/60'
                       )}
                     >
-                      <td className="px-3 py-2.5 font-bold">{line.tipo}</td>
-                      <td className="px-3 py-2.5">{line.marca}</td>
-                      <td className="px-3 py-2.5">{line.modelo}</td>
+                      <td className="px-3 py-2.5 font-bold text-gray-800 dark:text-white">{line.tipo}</td>
+                      <td className="px-3 py-2.5 font-semibold text-gray-800 dark:text-gray-100">{line.marca}</td>
+                      <td className="px-3 py-2.5 text-gray-700 dark:text-gray-200">{line.modelo}</td>
                       <td className="px-3 py-2.5 text-center">
                         {editingQtyKey === line.key && allowEditQuantity ? (
                           <div className="inline-flex flex-col items-center gap-1">
@@ -338,7 +342,7 @@ export default function ReceptionConduceWorkbench({
         {productLines.length > 0 ? (
           <div className="rounded-2xl border border-gray-100 dark:border-surface-800 bg-gray-50/80 dark:bg-surface-950/50 overflow-hidden">
             <div className="flex items-center justify-between gap-2 px-4 py-2.5 border-b border-gray-100 dark:border-surface-800">
-              <p className="text-[10px] font-black uppercase tracking-widest text-gray-700 dark:text-surface-200">
+              <p className="text-[10px] font-black uppercase tracking-widest text-gray-700 dark:text-gray-200">
                 Series pistoleadas
               </p>
               <span className="text-[9px] font-black uppercase tracking-widest text-emerald-600">
@@ -367,7 +371,7 @@ export default function ReceptionConduceWorkbench({
                         className="animate-in fade-in duration-200"
                       >
                         <td className="px-3 py-2.5 font-bold text-gray-800 dark:text-white">{row.marca}</td>
-                        <td className="px-3 py-2.5 text-gray-700 dark:text-surface-200">{row.modelo}</td>
+                        <td className="px-3 py-2.5 text-gray-700 dark:text-gray-200">{row.modelo}</td>
                         <td className="px-3 py-2.5 font-mono font-black text-cyan-700 dark:text-cyan-300">
                           {row.serie}
                         </td>
@@ -413,13 +417,13 @@ export default function ReceptionConduceWorkbench({
         <div className="px-4 pb-4">
           <button
             type="button"
-            disabled={completingTicket || !allSeriesComplete}
+            disabled={completingTicket || !(canCompleteTicket ?? allSeriesComplete)}
             onClick={onCompleteTicket}
             className="w-full py-4 rounded-2xl font-black uppercase tracking-[0.2em] text-[11px] transition-all disabled:opacity-40 disabled:cursor-not-allowed bg-gray-200 dark:bg-surface-800 text-gray-500 enabled:bg-indigo-600 enabled:text-white enabled:hover:bg-indigo-500"
           >
             {allSeriesComplete
-              ? 'Series completas — enviar a bodega'
-              : 'Complete el pistoleo de series'}
+              ? 'Enviar a bodega'
+              : 'Cerrar recepción (comentar faltantes si aplica)'}
           </button>
         </div>
       ) : null}

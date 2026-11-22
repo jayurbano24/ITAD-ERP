@@ -15,9 +15,9 @@ const nextConfig = {
   reactStrictMode: true,
   // OCR del recibo (tesseract + sharp) en Server Actions
   experimental: {
-    serverComponentsExternalPackages: ['tesseract.js', 'sharp'],
+    serverComponentsExternalPackages: ['tesseract.js', 'sharp', 'pdf-parse', 'pdfjs-dist'],
     serverActions: {
-      bodySizeLimit: '12mb',
+      bodySizeLimit: '16mb',
     },
   },
   // Headers de seguridad

@@ -1,3 +1,8 @@
+import 'server-only'
+
+import { ensurePdfParseWorker } from '@/lib/pdf/ensurePdfParseWorker'
+import { resolveWipeDisplayModel } from '@/lib/wipe/resolveWipeDisplayModel'
+
 export type WipeDiskInfo = {
   index: number
   vendor: string | null
@@ -17,6 +22,11 @@ export type WipeReportOrder = {
   prefix: string | null
   make: string | null
   model: string | null
+  /** MTM / código fábrica (Lenovo 20xxx) */
+  modelMtm: string | null
+  /** Nombre comercial (ej. ThinkPad T14 Gen 2) */
+  displayModel: string | null
+  systemVersion: string | null
   serialNumber: string | null
   customerAssetTag: string | null
   mainBoardPart: string | null
@@ -53,6 +63,169 @@ function pick(text: string, patterns: RegExp[]): string | null {
   return null
 }
 
+function sliceBetween(text: string, start: RegExp, end: RegExp): string {
+  const startM = text.match(start)
+  if (!startM || startM.index === undefined) return ''
+  const from = startM.index + startM[0].length
+  const rest = text.slice(from)
+  const endM = rest.match(end)
+  const to = endM?.index ?? rest.length
+  return rest.slice(0, to)
+}
+
+function looksLikeDiskModel(value: string): boolean {
+  return /NVMe|SSD|SK hynix|KINGSTON|UMIS|SAMSUNG MZ|WD |WDC |PC SN|APPLE SSD|HFS\d|SKHynix_/i.test(value)
+}
+
+/** Seriales de almacenamiento (no chassis) — evita tomarlos como serie del activo. */
+function looksLikeDiskSerial(serial: string): boolean {
+  const s = serial.trim()
+  if (!s) return true
+  if (/^WD-/i.test(s)) return true
+  if (/^(FDACN|FYB4N|FSACN|FJACN|CYA9N|SS0L|50026B|S4EN|UJUN|C027|819D)/i.test(s)) return true
+  if (s.length >= 18 && /^[A-Z0-9]+$/.test(s)) return true
+  if (/^CYA9N/i.test(s)) return true
+  // Lenovo / Dell chassis típicos
+  if (/^PF[0-9A-Z]{5,12}$/i.test(s)) return false
+  if (/^C0[2-9][A-Z0-9]{8,12}$/i.test(s)) return false // Apple
+  if (/^[A-Z0-9]{6,8}$/.test(s) && !/^[0-9]{6,}$/.test(s)) return false
+  return s.length > 15
+}
+
+function textBeforeErasure(text: string): string {
+  const idx = text.search(/Erasure Results/i)
+  return idx > 0 ? text.slice(0, idx) : ''
+}
+
+/** Bloque inicial: Manufacturer / Model / Serial (antes de Erasure Results). */
+function pickChassisSerialFromPreamble(text: string): string | null {
+  const pre = textBeforeErasure(text)
+  if (!pre || !/(?:Manufacturer|Chassis Type):/i.test(pre)) return null
+
+  const afterModel = pick(pre, [
+    /Model:\s*[^\n\t]+\s+Serial:\s*([A-Z0-9\-]+)/i,
+    /Model:\s*[^\n]+\n\s*Serial:\s*([A-Z0-9\-]+)/i,
+  ])
+  if (afterModel && !looksLikeDiskSerial(afterModel)) return afterModel
+
+  const scoped = pick(pre, [
+    /(?:Manufacturer|Chassis Type):[\s\S]{0,1200}?Serial:\s*([A-Z0-9\-]+)/i,
+  ])
+  if (scoped && !looksLikeDiskSerial(scoped)) return scoped
+
+  return null
+}
+
+function pickPreambleSystemModel(text: string): string | null {
+  const pre = textBeforeErasure(text)
+  if (!pre) return null
+  const m = pick(pre, [/Model:\s*([^\n\t]+)/i])
+  if (m && !looksLikeDiskModel(m) && !/Serial:/i.test(m)) return m
+  return null
+}
+
+/** Pie de página Blancco: `..., DELL INC., LATITUDE 5420, 3H6Q6M3` */
+function parseBlanccoBanner(text: string): { model: string | null; serial: string | null } {
+  for (const rawLine of text.split(/\n/)) {
+    const line = rawLine.trim()
+    if (!/BLANCCO DRIVE ERASER|DRIVE ERASER 7/i.test(line)) continue
+  if (!/(?:DELL|LENOVO|HP|Apple)/i.test(line)) continue
+
+    const parts = line.split(',').map((p) => p.trim()).filter(Boolean)
+    const brandIdx = parts.findIndex((p) =>
+      /^(DELL INC\.|Dell Inc\.|LENOVO|HP Inc\.|HP\b|Apple)/i.test(p)
+    )
+    if (brandIdx >= 0 && parts.length > brandIdx + 2) {
+      const model = parts[brandIdx + 1]
+      const serial = parts[brandIdx + 2]
+      if (serial && !looksLikeDiskSerial(serial)) {
+        return { model: model && !looksLikeDiskModel(model) ? model : null, serial }
+      }
+    }
+    if (parts.length >= 2) {
+      const serial = parts[parts.length - 1]
+      const model = parts[parts.length - 2]
+      if (serial && !looksLikeDiskSerial(serial) && /^[A-Z0-9\-]{4,20}$/i.test(serial)) {
+        return {
+          model: model && !looksLikeDiskModel(model) ? model : null,
+          serial,
+        }
+      }
+    }
+  }
+  return { model: null, serial: null }
+}
+
+/** Serie del equipo (chassis), nunca la del disco. */
+function pickSystemSerial(text: string): string | null {
+  const fromPreamble = pickChassisSerialFromPreamble(text)
+  if (fromPreamble) return fromPreamble
+
+  const banner = parseBlanccoBanner(text)
+  if (banner.serial) return banner.serial
+
+  const hw = sliceBetween(
+    text,
+    /Hardware Details/i,
+    /Testing\s*&\s*Diagnostics|Report Comments|Diagnostic Tests|Report Details/i
+  )
+  if (hw && /Manufacturer:/i.test(hw)) {
+    const afterModel = pick(hw, [
+      /Model:\s*[^\n\t]+\s+Serial:\s*([A-Z0-9\-]+)/i,
+      /Model:\s*[^\n]+\n\s*Serial:\s*([A-Z0-9\-]+)/i,
+    ])
+    if (afterModel && !looksLikeDiskSerial(afterModel)) return afterModel
+
+    const chassisOnly = pick(hw, [
+      /Chassis Serial:\s*([A-Z0-9\-]+)/i,
+      /System Serial(?: Number)?:\s*([A-Z0-9\-]+)/i,
+    ])
+    if (chassisOnly && !looksLikeDiskSerial(chassisOnly)) return chassisOnly
+  }
+
+  const explicit = pick(text, [
+    /System Serial(?: Number)?:\s*([A-Z0-9\-]+)/i,
+    /Chassis Serial:\s*([A-Z0-9\-]+)/i,
+  ])
+  if (explicit && !looksLikeDiskSerial(explicit)) return explicit
+
+  return null
+}
+
+function pickSystemModel(text: string): string | null {
+  const hw = sliceBetween(
+    text,
+    /Hardware Details/i,
+    /Erasure Results|Testing\s*&\s*Diagnostics|Report Comments|Diagnostic Tests/i
+  )
+  if (hw) {
+    const hwModel = pick(hw, [/Model:\s*([^\n\t]+)/i])
+    if (hwModel && !looksLikeDiskModel(hwModel)) return hwModel
+    if (hwModel && looksLikeDiskModel(hwModel)) {
+      const chassis = pick(hw, [/Chassis Type:\s*([^\n\t]+)/i])
+      const mfg = pick(hw, [/Manufacturer:\s*([^\n\t]+)/i])
+      if (chassis && mfg) return `${mfg.replace(/\s*Inc\.?/i, '')} ${chassis}`.trim()
+    }
+  }
+
+  const bannerModel = pick(text, [
+    /(?:Dell Inc\.|DELL INC\.|LENOVO|HP Inc\.|HP\b|Apple)[^,\n]*,\s*([^,\n]+),\s*[A-Z0-9]{6,20}\b/i,
+  ])
+  if (bannerModel && !looksLikeDiskModel(bannerModel)) return bannerModel
+
+  const sysTab = pick(text, [/SYSTEM MODEL\t([^\t\n]+)/i])
+  if (sysTab && !looksLikeDiskModel(sysTab)) return sysTab
+
+  return null
+}
+
+/** Nombre de archivo estándar para evidencia PDF por serie de equipo. */
+export function wipeCertificatePdfFileName(serial: string, fallback = 'certificado.pdf'): string {
+  const base = serial.trim().replace(/[^\w.-]+/g, '_')
+  if (!base) return fallback.replace(/[^\w.\-]+/g, '_')
+  return base.toLowerCase().endsWith('.pdf') ? base : `${base}.pdf`
+}
+
 function mapPrefix(chassisOrType: string | null, model: string | null): string | null {
   const source = `${chassisOrType || ''} ${model || ''}`.toLowerCase()
   if (/notebook|laptop|latitude|elitebook|thinkpad|macbook/.test(source)) return 'LAP'
@@ -65,8 +238,9 @@ function mapPrefix(chassisOrType: string | null, model: string | null): string |
 function normalizeWipeStatus(status: string | null): string | null {
   if (!status) return null
   const s = status.toLowerCase()
-  if (s.includes('erased') || s.includes('pass') || s.includes('successful') || s.includes('success')) return 'Pass'
-  if (s.includes('fail')) return 'Fail'
+  if (s.includes('erased')) return 'Erased'
+  if (s.includes('pass') || s.includes('successful') || s.includes('success')) return 'Erased'
+  if (s.includes('fail')) return 'Failed'
   return status
 }
 
@@ -74,12 +248,16 @@ function normalizeWipeStatus(status: string | null): string | null {
 export type WipeCertificateSummary = {
   marca: string | null
   modelo: string | null
+  /** Código MTM Blancco (Lenovo) cuando difiere del nombre comercial */
+  modeloMtm: string | null
   serie: string | null
+  serieDisco: string | null
   borrado: boolean | null
   estadoBorrado: string | null
   certificadoId: string | null
   software: string | null
   capacidadDisco: string | null
+  memoriaRam: string | null
   metodo: string | null
   fecha: string | null
 }
@@ -117,11 +295,7 @@ function parseBlanccoSummaryTable(text: string): Partial<WipeReportOrder> | null
     return {
       make,
       model,
-      serialNumber: pick(text, [
-        /System Serial(?: Number)?:\s*([A-Z0-9\-]+)/i,
-        /Chassis Serial:\s*([A-Z0-9\-]+)/i,
-        /Serial Number:\s*([A-Z0-9\-]+)/i,
-      ]),
+      serialNumber: null,
       software,
       testDate,
       reportUuid,
@@ -184,20 +358,34 @@ export function toWipeCertificateSummary(report: WipeReportOrder): WipeCertifica
   const status = normalizeWipeStatus(disk?.wipeStatus) || (report.comments?.match(/Erasure state:\s*([^\n·]+)/i)?.[1] ?? null)
   const borrado =
     status == null
-      ? /\berased successfully\b/i.test(report.rawExcerpt || '')
+      ? /\berased successfully\b/i.test(report.rawExcerpt || '') || /\bStatus:\s*Erased/i.test(report.rawExcerpt || '')
         ? true
         : null
-      : /pass|success|erased/i.test(status)
+      : /erased|pass|success/i.test(status)
+
+  const estadoBorrado =
+    status ||
+    (borrado === true ? 'Erased' : borrado === false ? 'Failed' : null)
+
+  const { modelo, modeloMtm } = resolveWipeDisplayModel(
+    report.make,
+    report.modelMtm || report.model,
+    report.rawExcerpt || null,
+    report.systemVersion
+  )
 
   return {
     marca: report.make,
-    modelo: report.model,
-    serie: report.serialNumber || disk?.serial || null,
+    modelo,
+    modeloMtm,
+    serie: report.serialNumber || null,
+    serieDisco: disk?.serial || null,
     borrado,
-    estadoBorrado: status || (borrado === true ? 'Pass' : borrado === false ? 'Fail' : null),
+    estadoBorrado,
     certificadoId: report.reportUuid,
     software: report.software,
     capacidadDisco: disk?.size || null,
+    memoriaRam: report.ramCapacityGb || null,
     metodo: disk?.method || null,
     fecha: report.testDate || report.processedTime || null,
   }
@@ -220,15 +408,15 @@ export function parseWipeReportText(rawText: string): WipeReportOrder {
     ])?.replace(/\s*Inc\.?/i, '').trim() ||
     null
 
-  const model = summary?.model || pick(text, [/Model:\s*([^\n\t]+)/i, /SYSTEM MODEL\t([^\t\n]+)/i])
-  const serialNumber =
-    summary?.serialNumber ||
-    pick(text, [
-      /Serial:\s*([A-Z0-9\-]+)/i,
-      /Serial Number:\s*([A-Z0-9\-]+)/i,
-      /System Serial(?: Number)?:\s*([A-Z0-9\-]+)/i,
-      /Chassis Serial:\s*([A-Z0-9\-]+)/i,
-    ])
+  const bannerMeta = parseBlanccoBanner(text)
+  const systemModel = pickPreambleSystemModel(text) || pickSystemModel(text) || bannerMeta.model
+  const model =
+    (summary?.model && !looksLikeDiskModel(summary.model) ? summary.model : null) ||
+    systemModel ||
+    pick(text, [/SYSTEM MODEL\t([^\t\n]+)/i]) ||
+    null
+
+  const serialNumber = pickSystemSerial(text) || summary?.serialNumber || null
   const chassis = pick(text, [/Chassis Type:\s*([^\n\t]+)/i])
   const mainBoardPart = pick(text, [
     /Motherboard:\s*[^\n,]*,\s*([A-Z0-9\-]+)/i,
@@ -245,9 +433,10 @@ export function parseWipeReportText(rawText: string): WipeReportOrder {
       ? 'MB'
       : null
   const totalMemoryGb =
-    totalMemoryRaw && totalMemoryUnit === 'MB'
+    (totalMemoryRaw && totalMemoryUnit === 'MB'
       ? String(Math.round(Number(totalMemoryRaw) / 1024) || Number(totalMemoryRaw) / 1024)
-      : totalMemoryRaw
+      : totalMemoryRaw) ||
+    pick(text, [/Memory Bank:\s*(\d+)\s*GB/i, /Total Memory Size:\s*(\d+)\s*GB/i])
   const ramType = pick(text, [/Memory Bank:.*?,\s*[0-9]+MB,\s*[0-9]+MHz,\s*(DDR[0-9]+)/i])
   const cpu = pick(text, [
     /([0-9]+th Gen Intel\(R\) Core\(TM\) i[0-9]-[0-9A-Z]+)/i,
@@ -350,7 +539,10 @@ export function parseWipeReportText(rawText: string): WipeReportOrder {
   const diskModel =
     summary?.disks?.[0]?.model ||
     parsedDisksFromBlocks[0]?.model ||
-    pick(text, [/Erasure Results[\s\S]*?Model:\s*\n?\s*([^\n]+)/i])
+    pick(text, [
+      /Erasure Results[\s\S]*?Vendor:[^\n]*Model:\s*([^\n\t]+?)\s+Serial:/i,
+      /Erasure Results[\s\S]*?Model:\s*\n?\s*([^\n]+)/i,
+    ])
   const diskBus =
     summary?.disks?.[0]?.bus ||
     parsedDisksFromBlocks[0]?.bus ||
@@ -432,10 +624,26 @@ export function parseWipeReportText(rawText: string): WipeReportOrder {
     diskWipeStatus && !/fail/i.test(diskWipeStatus) ? `Wipe: ${diskWipeStatus}` : null,
   ].filter(Boolean)
 
+  const systemVersion = pick(text, [
+    /System Version:\s*([^\n\t]+)/i,
+    /System SKU Number:[^\n]*?(ThinkPad[^\n]+)/i,
+  ])
+  const modelMtm =
+    model && /^20[A-Z0-9]{4,}/i.test(model) ? model : null
+  const { modelo: displayModel, modeloMtm } = resolveWipeDisplayModel(
+    make,
+    modelMtm || model,
+    text,
+    systemVersion
+  )
+
   return {
     prefix: mapPrefix(chassis, model),
     make,
     model,
+    modelMtm: modeloMtm || modelMtm,
+    displayModel,
+    systemVersion,
     serialNumber,
     customerAssetTag: null,
     mainBoardPart,
@@ -474,6 +682,7 @@ export async function parseWipeReportPdfBuffer(buffer: Buffer): Promise<WipeRepo
   if (!PDFParse) {
     throw new Error('pdf-parse no disponible (PDFParse)')
   }
+  await ensurePdfParseWorker(PDFParse as unknown as Parameters<typeof ensurePdfParseWorker>[0])
   const parser = new PDFParse({ data: buffer })
   const result = await parser.getText()
   return parseWipeReportText(result.text || '')

@@ -6,6 +6,7 @@ import { createClient } from '@/lib/supabase/server'
 
 import { cookies } from 'next/headers'
 import { SessionUsuarioSchema } from '@/lib/schemas'
+import { resolveLoginEmail } from '@/lib/auth/resolveLoginEmail'
 
 /**
  * Server Action para iniciar sesión
@@ -15,17 +16,23 @@ export async function login(formData: FormData) {
   const supabase = await createClient()
   const cookieStore = await cookies()
 
-  const email = formData.get('email') as string
+  const identifier = (formData.get('email') as string) || ''
   const password = formData.get('password') as string
   const deviceId = formData.get('deviceId') as string
 
-  // Validación básica
-  if (!email || !password) {
+  if (!identifier.trim() || !password) {
     redirect('/?error=MissingCredentials')
   }
 
+  const resolved = await resolveLoginEmail(identifier)
+  if ('error' in resolved) {
+    redirect(
+      `/?error=LoginFailed&message=${encodeURIComponent(resolved.error)}`
+    )
+  }
+
   const { data: authData, error } = await supabase.auth.signInWithPassword({
-    email,
+    email: resolved.email,
     password,
   })
 

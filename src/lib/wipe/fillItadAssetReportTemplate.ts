@@ -20,9 +20,10 @@ import {
 
 const TEMPLATE_URL = '/templates/ORD20xxx-ITAD_Asset_Report_Testing_Log.xlsx'
 
-/** Filas de datos en Laptops del template vacío: 4..13; 15 = totales */
+/** Filas de datos en Laptops del template vacío: 4..14; fila 15 = totales (no escribir equipos ahí) */
 const LAPTOPS_DATA_START = 4
-const LAPTOPS_PLACEHOLDER_END = 13
+const LAPTOPS_TOTAL_ROW_ANCHOR = 15
+const LAPTOPS_FIRST_TOTAL_SLOT = LAPTOPS_TOTAL_ROW_ANCHOR - LAPTOPS_DATA_START // 11 filas (4–14)
 
 function v(value: string | number | null | undefined): string {
   if (value === null || value === undefined || value === '') return ''
@@ -67,7 +68,7 @@ function clearDataRow(row: { eachCell: Function; getCell: (n: number) => { value
 
 /** Valores Laptops A–X + HDD Z–AG (col 25 vacía como en plantilla) */
 function laptopValues(r: WipeExcelRow): Array<string | number | null> {
-  const device = v(r.device) || mapDeviceLabel(r.prefix) || 'Laptop'
+  const device = v(r.device) || mapDeviceLabel(r.prefix, null, r.make, r.model) || 'Laptop'
   const ram = v(r.ramCapacityGb)
     ? /gb/i.test(v(r.ramCapacityGb))
       ? v(r.ramCapacityGb)
@@ -160,7 +161,7 @@ export async function downloadItadAssetReportPack(
   const wb = await loadTemplateWorkbook()
   const bySheet = new Map<string, WipeExcelRow[]>()
   for (const row of rows) {
-    const device = v(row.device) || mapDeviceLabel(row.prefix) || 'Laptop'
+    const device = v(row.device) || mapDeviceLabel(row.prefix, null, row.make, row.model) || 'Laptop'
     const sheetName = sheetForDevice(device)
     const list = bySheet.get(sheetName) || []
     list.push(row)
@@ -175,10 +176,20 @@ export async function downloadItadAssetReportPack(
   const ws = wb.getWorksheet('Laptops')
   if (!ws) throw new Error('La plantilla no tiene hoja Laptops')
 
-  // Limpiar placeholders 4..13
-  for (let r = LAPTOPS_DATA_START; r <= LAPTOPS_PLACEHOLDER_END; r++) {
+  if (laptops.length > LAPTOPS_FIRST_TOTAL_SLOT) {
+    const insertCount = laptops.length - LAPTOPS_FIRST_TOTAL_SLOT
+    for (let i = 0; i < insertCount; i++) {
+      ws.spliceRows(LAPTOPS_TOTAL_ROW_ANCHOR, 0, [])
+    }
+  }
+
+  const lastDataRow = LAPTOPS_DATA_START + laptops.length - 1
+  const totalRow = lastDataRow + 1
+
+  for (let r = LAPTOPS_DATA_START; r <= lastDataRow; r++) {
     clearDataRow(ws.getRow(r))
   }
+  clearDataRow(ws.getRow(totalRow))
 
   const pdfMeta: Array<{ row: WipeExcelRow; zipPath: string }> = []
   const usedNames = new Map<string, number>()
@@ -215,20 +226,16 @@ export async function downloadItadAssetReportPack(
     }
   })
 
-  // Totales: SUM debajo de la última fila de datos
-  const lastData = LAPTOPS_DATA_START + Math.max(laptops.length, 1) - 1
-  const totalRow = Math.max(lastData + 2, 15)
-  // Limpiar fila 15 vieja si movemos totales
-  if (totalRow !== 15) {
-    const old = ws.getRow(15)
-    old.getCell(21).value = null
-    old.getCell(22).value = null
-  }
   ws.getRow(totalRow).getCell(21).value = {
-    formula: `SUM(U${LAPTOPS_DATA_START}:U${lastData})`,
+    formula: `SUM(U${LAPTOPS_DATA_START}:U${lastDataRow})`,
   }
   ws.getRow(totalRow).getCell(22).value = {
-    formula: `SUM(V${LAPTOPS_DATA_START}:V${lastData})`,
+    formula: `SUM(V${LAPTOPS_DATA_START}:V${lastDataRow})`,
+  }
+  for (let r = totalRow + 1; r <= totalRow + 3; r++) {
+    const extra = ws.getRow(r)
+    extra.getCell(21).value = null
+    extra.getCell(22).value = null
   }
 
   // Otras hojas del template (PC, Server, etc.): Device/Make/Model/Serial básicos
@@ -238,7 +245,7 @@ export async function downloadItadAssetReportPack(
     if (!sheet || list.length === 0) continue
     list.forEach((row, idx) => {
       const excelRow = 4 + idx
-      const device = v(row.device) || mapDeviceLabel(row.prefix) || sheetName
+      const device = v(row.device) || mapDeviceLabel(row.prefix, null, row.make, row.model) || sheetName
       const target = sheet.getRow(excelRow)
       target.getCell(1).value = device
       target.getCell(2).value = v(row.make) || null

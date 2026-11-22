@@ -4,6 +4,7 @@ import { ArrowLeft } from 'lucide-react'
 import { getQuotationById, getQuotationComments } from '../actions'
 import QuotationDetailClient from './QuotationDetailClient'
 import QuotationLetterhead from '../components/QuotationLetterhead'
+import QuotationBarcode from '../components/QuotationBarcode'
 import QuotationWatermark from '../components/QuotationWatermark'
 import QuotationInfoCompact from '../components/QuotationInfoCompact'
 import {
@@ -21,6 +22,12 @@ import {
   QUOTATION_IVA_RATE,
   resolveQuotationTotals,
 } from '@/lib/ventas/quotationIva'
+import {
+  formatQuotationItemGrade,
+  formatQuotationNotesForDisplay,
+} from '@/lib/ventas/printQuotationPdf'
+import { TECHCORPS_LETTERHEAD } from '@/lib/ventas/techcorpsLetterhead'
+import { DEFAULT_WARRANTY_DAYS, formatWarrantyPeriodEs } from '@/lib/ventas/warrantyOptions'
 
 export const dynamic = 'force-dynamic'
 
@@ -67,13 +74,11 @@ export default async function CotizacionDetallePage({
           <div className="flex flex-wrap items-start justify-between gap-3 mb-4 pb-3 border-b border-gray-100 dark:border-surface-800">
             <div className="min-w-0 flex-1 pr-2">
               <h1 className="text-lg font-extrabold text-gray-900 dark:text-white leading-tight">
-                {quotation.title}
+                Cotización
               </h1>
             </div>
             <div className="flex flex-col items-end gap-1.5 shrink-0">
-              <p className="text-sm font-mono font-bold text-indigo-600 dark:text-indigo-400 tracking-tight">
-                {quotation.quote_number}
-              </p>
+              <QuotationBarcode quoteNumber={quotation.quote_number} size="md" />
               <span
                 className={cn(
                   'text-[10px] font-bold uppercase px-2 py-0.5 rounded border',
@@ -127,6 +132,10 @@ export default async function CotizacionDetallePage({
                     : formatQuotationRequesterType(quotation.solicitante_tipo),
               },
               { label: 'Pago', value: formatQuotationPaymentMethod(quotation.payment_method) },
+              {
+                label: 'Garantía (política)',
+                value: formatWarrantyPeriodEs(quotation.warranty_days ?? DEFAULT_WARRANTY_DAYS),
+              },
             ]}
           />
 
@@ -134,7 +143,7 @@ export default async function CotizacionDetallePage({
             <div className="mt-3 pt-2 border-t border-gray-100 dark:border-surface-800">
               <p className="text-[10px] font-bold text-gray-500 uppercase mb-1">Notas</p>
               <p className="text-xs whitespace-pre-wrap text-gray-800 dark:text-surface-200">
-                {quotation.description}
+                {formatQuotationNotesForDisplay(quotation.description)}
               </p>
             </div>
           )}
@@ -144,36 +153,35 @@ export default async function CotizacionDetallePage({
               <p className="text-[10px] font-bold text-gray-500 dark:text-surface-400 uppercase tracking-wider mb-2">
                 Equipos cotizados
               </p>
-              <div className="min-w-0 overflow-hidden rounded-lg border border-gray-100 dark:border-surface-800 bg-white/60 dark:bg-surface-900/40">
+              <div className="min-w-0 overflow-hidden rounded-lg border border-gray-200 dark:border-surface-700 bg-white dark:bg-surface-900">
                 <div className="overflow-x-auto">
-                  <table className="w-full min-w-[520px] text-xs border-collapse">
+                  <table className="w-full min-w-[560px] text-xs border-collapse">
                     <thead>
                       <tr className="text-[10px] font-bold uppercase tracking-wide text-gray-500 dark:text-surface-400 border-b border-gray-200 dark:border-surface-700 bg-gray-50/80 dark:bg-surface-950/50">
-                        <th className="py-2.5 px-2 text-left align-middle">Descripción</th>
-                        <th className="py-2.5 px-2 text-center align-middle">Serie</th>
-                        <th className="py-2.5 px-2 text-center align-middle">Marca / modelo</th>
+                        <th className="py-2.5 px-2 text-left align-middle">Marca</th>
+                        <th className="py-2.5 px-2 text-left align-middle">Modelo</th>
+                        <th className="py-2.5 px-2 text-center align-middle">Grado</th>
                         <th className="py-2.5 px-2 text-center align-middle">Cant.</th>
                         <th className="py-2.5 px-2 text-center align-middle whitespace-nowrap w-[7rem]">Precio</th>
-                        <th className="py-2.5 px-2 text-center align-middle whitespace-nowrap w-[7.25rem]">Subtotal</th>
+                        <th className="py-2.5 px-2 text-center align-middle whitespace-nowrap w-[7.25rem]">
+                          Sub-total
+                        </th>
                       </tr>
                     </thead>
                     <tbody>
-                      {quotation.items.map((item, idx) => (
+                      {quotation.items.map((item) => (
                         <tr
                           key={item.id}
-                          className={cn(
-                            'border-b border-gray-100 dark:border-surface-800/80',
-                            idx % 2 === 1 && 'bg-gray-50/50 dark:bg-surface-950/30'
-                          )}
+                          className="border-b border-gray-100 dark:border-surface-800/80 bg-white dark:bg-surface-900"
                         >
                           <td className="py-2.5 px-2 align-middle text-left text-gray-900 dark:text-white break-words">
-                            {item.description}
+                            {item.manufacturer?.trim() || '—'}
                           </td>
-                          <td className="py-2.5 px-2 align-middle text-center font-mono text-[11px] font-semibold text-indigo-600 dark:text-indigo-400 break-all">
-                            {item.serial_number || '—'}
+                          <td className="py-2.5 px-2 align-middle text-left text-gray-700 dark:text-surface-300 break-words">
+                            {item.model?.trim() || '—'}
                           </td>
-                          <td className="py-2.5 px-2 align-middle text-center text-gray-700 dark:text-surface-300 break-words">
-                            {[item.manufacturer, item.model].filter(Boolean).join(' · ') || '—'}
+                          <td className="py-2.5 px-2 align-middle text-center text-gray-700 dark:text-surface-300 whitespace-nowrap">
+                            {formatQuotationItemGrade(item.condition)}
                           </td>
                           <td className="py-2.5 px-2 align-middle text-center tabular-nums font-medium">
                             {item.quantity}
@@ -187,7 +195,7 @@ export default async function CotizacionDetallePage({
                         </tr>
                       ))}
                     </tbody>
-                    <tfoot className="bg-gray-50/50 dark:bg-surface-950/40 border-t border-gray-200 dark:border-surface-700">
+                    <tfoot className="bg-white dark:bg-surface-900 border-t border-gray-200 dark:border-surface-700">
                       {iva.discountApplied > 0 ? (
                         <>
                           <tr>
@@ -265,8 +273,21 @@ export default async function CotizacionDetallePage({
       </div>
 
       <footer className="mt-6 pt-4 border-t border-gray-200 dark:border-surface-700 text-center text-[11px] text-gray-500 dark:text-surface-500 print:mt-4">
-        <p className="font-semibold text-gray-800 dark:text-surface-300">TECHCORPS GUATEMALA</p>
-        <p>+502 2436 0336 · +502 2254 0430 · info@techcommwireless.com</p>
+        <p className="font-semibold text-gray-800 dark:text-surface-300">
+          {TECHCORPS_LETTERHEAD.legalName}
+        </p>
+        <p>
+          {TECHCORPS_LETTERHEAD.phonesDisplay}
+          <span className="mx-1.5">·</span>
+          <a
+            href={TECHCORPS_LETTERHEAD.websiteUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-indigo-600 dark:text-indigo-400 hover:underline print:text-gray-700"
+          >
+            {TECHCORPS_LETTERHEAD.websiteDisplay}
+          </a>
+        </p>
       </footer>
     </div>
   )

@@ -24,6 +24,12 @@
       ]
     }
   ],
+  "crons": [
+    {
+      "path": "/api/cron/sat-retenedores",
+      "schedule": "0 12 * * 1"
+    }
+  ],
   "rewrites": [
     {
       "source": "/api/:path*",

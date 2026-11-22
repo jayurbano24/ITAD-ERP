@@ -4,14 +4,25 @@ import { createClient as createSupabaseClient } from '@supabase/supabase-js'
 import { supabaseConfig } from '@/lib/supabase/config'
 import {
   parseWipeCertificateSummary,
+  wipeCertificatePdfFileName,
   type WipeCertificateSummary,
   type WipeReportOrder,
 } from '@/lib/wipe/parseWipeReportPdf'
 import { moveAssetToValorizacion } from '@/lib/wipe/moveToValorizacion'
+import { resolveSerialLookup } from '@/lib/inventario/resolveSerialLookup'
 import { revalidatePath } from 'next/cache'
+
+function normalizeOrd(value: string): string {
+  return value.replace(/\s+/g, '').replace(/ORD-/i, 'ORD').toUpperCase()
+}
 
 const MAX_FILES = 50
 const MAX_FILE_BYTES = 10 * 1024 * 1024
+
+function displayPdfName(originalName: string, summary?: WipeCertificateSummary): string {
+  if (summary?.serie) return wipeCertificatePdfFileName(summary.serie, originalName)
+  return originalName
+}
 
 function getStorageClient() {
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY?.trim()
@@ -75,6 +86,31 @@ export async function POST(request: Request) {
       )
     }
 
+    const projectOrdRaw = String(formData.get('projectOrd') || '').trim()
+    const projectOrd = projectOrdRaw ? normalizeOrd(projectOrdRaw) : ''
+    if (!projectOrd || !/^ORD\d{4,}$/i.test(projectOrd)) {
+      return NextResponse.json(
+        { error: 'Seleccione el proyecto ORD (ej. ORD26580) antes de subir los PDF' },
+        { status: 400 }
+      )
+    }
+
+    const { data: ordBatches } = await supabase
+      .from('batches')
+      .select('id, internal_batch_id')
+      .ilike('internal_batch_id', 'ORD%')
+
+    const projectBatchIds = (ordBatches || [])
+      .filter((b) => normalizeOrd(String(b.internal_batch_id || '')) === projectOrd)
+      .map((b) => b.id as string)
+
+    if (!projectBatchIds.length) {
+      return NextResponse.json(
+        { error: `Proyecto ${projectOrd} no encontrado o sin lote en inventario` },
+        { status: 404 }
+      )
+    }
+
     const adminClient = getStorageClient()
     const storageClient = adminClient || supabase
     const results: BatchCertificateResult[] = []
@@ -106,10 +142,11 @@ export async function POST(request: Request) {
 
         const buffer = Buffer.from(await file.arrayBuffer())
         const { report, summary } = await parseWipeCertificateSummary(buffer)
+        const storageFileName = displayPdfName(fileName, summary)
 
         if (!summary.serie) {
           results.push({
-            fileName,
+            fileName: storageFileName,
             ok: true,
             summary,
             assetId: null,
@@ -121,21 +158,10 @@ export async function POST(request: Request) {
           continue
         }
 
-        const serieNorm = summary.serie.trim().toUpperCase()
-        const { data: candidates } = await supabase
-          .from('assets')
-          .select('id, serial_number, manufacturer, model, status, specifications')
-          .ilike('serial_number', serieNorm)
-          .limit(10)
-
-        const asset =
-          (candidates || []).find(
-            (a) => String(a.serial_number || '').trim().toUpperCase() === serieNorm
-          ) || null
-
-        if (!asset) {
+        const resolved = await resolveSerialLookup(supabase, summary.serie)
+        if (!resolved?.assetId) {
           results.push({
-            fileName,
+            fileName: storageFileName,
             ok: true,
             summary,
             assetId: null,
@@ -143,14 +169,53 @@ export async function POST(request: Request) {
             evidenceSaved: false,
             movedToVal: false,
             status: 'parseado_sin_activo',
-            error: 'Serie no encontrada en inventario',
+            error: `Serie no encontrada en inventario (${projectOrd})`,
+          })
+          continue
+        }
+
+        const { data: asset, error: assetLookupError } = await supabase
+          .from('assets')
+          .select('id, serial_number, manufacturer, model, status, specifications, batch_id')
+          .eq('id', resolved.assetId)
+          .in('batch_id', projectBatchIds)
+          .maybeSingle()
+
+        if (assetLookupError) {
+          results.push({
+            fileName: storageFileName,
+            ok: false,
+            status: 'error',
+            error: assetLookupError.message,
+          })
+          continue
+        }
+
+        if (!asset) {
+          const { data: other } = await supabase
+            .from('assets')
+            .select('serial_number, batch_id')
+            .eq('id', resolved.assetId)
+            .maybeSingle()
+          results.push({
+            fileName: storageFileName,
+            ok: true,
+            summary,
+            assetId: resolved.assetId,
+            assetSerial: other?.serial_number || resolved.serialNumber,
+            evidenceSaved: false,
+            movedToVal: false,
+            status: 'parseado_sin_activo',
+            error: other
+              ? `Serie ${resolved.serialNumber} no pertenece a ${projectOrd}`
+              : `Serie no está en el proyecto ${projectOrd}`,
           })
           continue
         }
 
         if (asset.status === 'sold' || asset.status === 'destroyed' || asset.status === 'scrapped') {
           results.push({
-            fileName,
+            fileName: storageFileName,
             ok: false,
             summary,
             assetId: asset.id,
@@ -163,10 +228,10 @@ export async function POST(request: Request) {
           continue
         }
 
-        // Subir PDF a Storage + metadata evidencia
+        // Subir PDF a Storage + metadata evidencia (nombre = serie del equipo)
         const timestamp = Date.now()
         const token = Math.random().toString(36).slice(2, 8)
-        const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_')
+        const safeName = storageFileName.replace(/[^a-zA-Z0-9._-]/g, '_')
         const filePath = `${asset.id}/pdf/${timestamp}-${token}-${safeName}`
 
         const { error: uploadError } = await storageClient.storage
@@ -178,7 +243,7 @@ export async function POST(request: Request) {
 
         if (uploadError) {
           results.push({
-            fileName,
+            fileName: storageFileName,
             ok: false,
             summary,
             assetId: asset.id,
@@ -200,7 +265,7 @@ export async function POST(request: Request) {
         const { data: rpcRows, error: rpcError } = await storageClient.rpc('insert_wipe_evidence', {
           p_asset_id: asset.id,
           p_type: 'pdf',
-          p_file_name: fileName,
+          p_file_name: storageFileName,
           p_file_url: publicUrl,
           p_content_type: file.type || 'application/pdf',
           p_file_size: file.size,
@@ -218,7 +283,7 @@ export async function POST(request: Request) {
             .insert({
               asset_id: asset.id,
               type: 'pdf',
-              file_name: fileName,
+              file_name: storageFileName,
               file_url: publicUrl,
               content_type: file.type || 'application/pdf',
               file_size: file.size,
@@ -230,7 +295,7 @@ export async function POST(request: Request) {
 
           if (fallbackError) {
             results.push({
-              fileName,
+              fileName: storageFileName,
               ok: false,
               summary,
               assetId: asset.id,
@@ -270,11 +335,12 @@ export async function POST(request: Request) {
                 ram_capacity: (report as WipeReportOrder).ramCapacityGb || null,
                 ram_type: (report as WipeReportOrder).ramType || null,
                 disk_capacity: report.disks?.[0]?.size || null,
+                disk_serial: report.disks?.[0]?.serial || summary.serieDisco || null,
                 disk_type: report.disks?.[0]?.bus || null,
               },
             },
             manufacturer: asset.manufacturer || summary.marca,
-            model: asset.model || summary.modelo,
+            model: summary.modelo || asset.model,
             updated_at: new Date().toISOString(),
           })
           .eq('id', asset.id)
@@ -295,7 +361,7 @@ export async function POST(request: Request) {
         }
 
         results.push({
-          fileName,
+          fileName: storageFileName,
           ok: true,
           summary,
           assetId: asset.id,
@@ -331,7 +397,7 @@ export async function POST(request: Request) {
       fallidos: results.filter((r) => r.status === 'borrado_fallido' || r.status === 'error').length,
     }
 
-    return NextResponse.json({ success: true, results, totals })
+    return NextResponse.json({ success: true, projectOrd, results, totals })
   } catch (error: unknown) {
     console.error('[batch-certificates]', error)
     const message = error instanceof Error ? error.message : 'Error en lote'

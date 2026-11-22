@@ -67,6 +67,10 @@ export default function ExcelColumnFilter({
   }
 
   const selectAll = () => setDraft(new Set(sortedOptions))
+  const selectVisible = () => {
+    if (filteredOptions.length === 0) return
+    setDraft(new Set(filteredOptions))
+  }
   const clearAll = () => setDraft(new Set())
 
   const apply = () => {
@@ -170,7 +174,16 @@ export default function ExcelColumnFilter({
               </div>
             </div>
 
-            <div className="flex items-center justify-between gap-2 border-b border-gray-800 px-2 py-1.5">
+            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-800 px-2 py-1.5">
+              {query.trim() && filteredOptions.length > 0 && (
+                <button
+                  type="button"
+                  onClick={selectVisible}
+                  className="text-[10px] font-bold uppercase tracking-wide text-cyan-400 hover:text-cyan-300"
+                >
+                  Coincidencias ({filteredOptions.length})
+                </button>
+              )}
               <button
                 type="button"
                 onClick={selectAll}

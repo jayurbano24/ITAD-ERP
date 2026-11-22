@@ -4,6 +4,10 @@ import type { Ref } from 'react'
 import { Loader2, Plus, Trash2, X } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { PitoleoProductLine, PitoleoUnit } from '@/app/recepcion/components/ReceptionConduceWorkbench'
+import {
+  ReceiptSerialMatchHint,
+  receiptInputBorderClass,
+} from '@/app/recepcion/components/ReceiptSerialMatchHint'
 
 type Props = {
   line: PitoleoProductLine
@@ -36,6 +40,8 @@ export default function ReceptionPitoleoPanel({
 }: Props) {
   const nextUnitIndex = line.units.findIndex((u) => !(u.serie || '').trim())
   const safeUnitIndex = nextUnitIndex >= 0 ? nextUnitIndex + 1 : line.quantity
+  const nextExpected =
+    nextUnitIndex >= 0 ? line.units[nextUnitIndex]?.expectedSerial?.trim() : ''
 
   return (
     <div
@@ -77,11 +83,22 @@ export default function ReceptionPitoleoPanel({
             value={serialInput}
             onChange={(e) => onSerialInputChange(e.target.value)}
             onKeyDown={onSerialKeyDown}
-            placeholder={`Pistolear serie — unidad ${safeUnitIndex} (Enter)`}
+            placeholder={
+              nextExpected
+                ? `Serie del recibo: ${nextExpected} (Enter)`
+                : `Pistolear serie — unidad ${safeUnitIndex} (Enter)`
+            }
             disabled={addingSerial || inputsDisabled}
-            className="w-full px-4 py-4 rounded-xl bg-white dark:bg-surface-950 border-2 border-gray-100 dark:border-surface-800 font-mono text-sm font-bold focus:outline-none focus:border-cyan-500 disabled:opacity-50"
+            className={cn(
+              'w-full px-4 py-4 rounded-xl bg-white dark:bg-surface-950 border-2 font-mono text-sm font-bold focus:outline-none disabled:opacity-50',
+              receiptInputBorderClass(nextExpected, serialInput) ||
+                'border-gray-100 dark:border-surface-800 focus:border-cyan-500'
+            )}
             autoComplete="off"
           />
+          {!serialError ? (
+            <ReceiptSerialMatchHint expectedFromReceipt={nextExpected} draftSerial={serialInput} />
+          ) : null}
           {serialError ? (
             <p className="text-[9px] font-black uppercase tracking-widest text-rose-500">{serialError}</p>
           ) : null}
@@ -99,7 +116,8 @@ export default function ReceptionPitoleoPanel({
           <thead className="bg-gray-50 dark:bg-surface-950 text-[9px] font-black uppercase tracking-widest text-gray-500">
             <tr>
               <th className="px-3 py-2">Unidad</th>
-              <th className="px-3 py-2">Serie</th>
+              <th className="px-3 py-2">Recibo</th>
+              <th className="px-3 py-2">Capturada</th>
               <th className="px-3 py-2 text-center">Estado</th>
               <th className="px-3 py-2 w-10" />
             </tr>
@@ -107,9 +125,21 @@ export default function ReceptionPitoleoPanel({
           <tbody>
             {line.units.map((unit, idx) => {
               const has = !!(unit.serie || '').trim()
+              const expected = (unit.expectedSerial || '').trim()
+              const matches =
+                has && expected ? unit.serie.trim().toUpperCase() === expected.toUpperCase() : has
               return (
                 <tr key={unit.id} className="border-t border-gray-50 dark:border-surface-800">
-                  <td className="px-3 py-2 font-black uppercase text-gray-600">Unidad {idx + 1}</td>
+                  <td className="px-3 py-2 font-black uppercase text-gray-600">
+                    {unit.isAdditional ? (
+                      <span className="text-cyan-700 dark:text-cyan-400">Adicional</span>
+                    ) : (
+                      `Unidad ${idx + 1}`
+                    )}
+                  </td>
+                  <td className="px-3 py-2 font-mono text-[10px] text-purple-700 dark:text-purple-300">
+                    {expected && !unit.isAdditional ? expected : '—'}
+                  </td>
                   <td className="px-3 py-2 font-mono font-bold text-gray-900 dark:text-white">
                     {has ? unit.serie : '—'}
                   </td>
@@ -117,10 +147,24 @@ export default function ReceptionPitoleoPanel({
                     <span
                       className={cn(
                         'text-[9px] font-black uppercase tracking-widest',
-                        has ? 'text-emerald-600' : 'text-amber-600'
+                        has && matches
+                          ? 'text-emerald-600'
+                          : has
+                            ? 'text-rose-500'
+                            : 'text-amber-600'
                       )}
                     >
-                      {has ? 'OK' : 'Pendiente'}
+                      {unit.isAdditional
+                        ? has
+                          ? 'Extra'
+                          : 'Extra pend.'
+                        : has
+                          ? matches
+                            ? 'OK recibo'
+                            : 'Discrepancia'
+                          : expected
+                            ? 'Pistolee recibo'
+                            : 'Pendiente'}
                     </span>
                   </td>
                   <td className="px-3 py-2 text-right">

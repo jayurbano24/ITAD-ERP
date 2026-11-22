@@ -1,8 +1,8 @@
 import type { ReactNode } from 'react'
-import DashboardLayout from '../dashboard/layout'
 
 export const dynamic = 'force-dynamic'
 
-export default function RecepcionLayout({ children }: { children: ReactNode }) {
-  return <DashboardLayout>{children}</DashboardLayout>
+/** Layout raíz: los hijos definen si usan escritorio (sidebar) o móvil. */
+export default function RecepcionRootLayout({ children }: { children: ReactNode }) {
+  return children
 }

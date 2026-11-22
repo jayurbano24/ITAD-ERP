@@ -3,8 +3,21 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { SearchInput } from '@/components/ui/SearchInput'
-import { Shield, FileDown, RefreshCw, Download, Tags, X } from 'lucide-react'
+import { Shield, FileDown, RefreshCw, Download, Tags, X, Pencil } from 'lucide-react'
 import { cn } from '@/lib/utils'
+import {
+  emptyEvidenceReportForm,
+  formToPatch,
+  rowToEvidenceForm,
+} from '@/lib/wipe/evidenceReportEditFields'
+import { EvidenceReportEditModal } from './EvidenceReportEditModal'
+import {
+  REC_OPTIONS,
+  F_OPTIONS,
+  C_OPTIONS,
+  R2_OPTIONS,
+  SANITIZATION_OPTIONS,
+} from './evidenceEditConstants'
 import {
   displayBattery,
   displayCharger,
@@ -99,19 +112,6 @@ type OrdSummary = {
   withPdfCount: number
 }
 
-const REC_OPTIONS = ['R', 'E', 'C']
-const F_OPTIONS = ['F1', 'F2', 'F3', 'F4', 'F5', 'F6']
-const C_OPTIONS = ['C0', 'C1', 'C2', 'C3', 'C4', 'C5', 'C6', 'C7', 'C8', 'C9']
-const R2_OPTIONS = [
-  { value: 'C', label: 'C — Controlled' },
-  { value: 'U', label: 'U — Unrestricted' },
-]
-const SANITIZATION_OPTIONS = [
-  { value: 'D1', label: 'D1 — Pre-Sanitization' },
-  { value: 'D2', label: 'D2 — Non-Data' },
-  { value: 'D3', label: 'D3 — Sanitized' },
-]
-
 function cell(value: string | number | null | undefined) {
   if (value === null || value === undefined || value === '') return ''
   return String(value)
@@ -131,6 +131,10 @@ export default function EvidencesPage() {
   const [rows, setRows] = useState<WipeOrderRow[]>([])
   const [orders, setOrders] = useState<OrdSummary[]>([])
   const [selectedOrd, setSelectedOrd] = useState<string | null>(null)
+
+  useEffect(() => {
+    setSelectedAssetIds(new Set())
+  }, [selectedOrd])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [searchTerm, setSearchTerm] = useState('')
@@ -144,6 +148,12 @@ export default function EvidencesPage() {
   const [savingClass, setSavingClass] = useState(false)
   const [classError, setClassError] = useState<string | null>(null)
   const [exporting, setExporting] = useState(false)
+  const [selectedAssetIds, setSelectedAssetIds] = useState<Set<string>>(() => new Set())
+  const [editTargetIds, setEditTargetIds] = useState<string[]>([])
+  const [editBulk, setEditBulk] = useState(false)
+  const [reportForm, setReportForm] = useState(emptyEvidenceReportForm)
+  const [savingReport, setSavingReport] = useState(false)
+  const [reportError, setReportError] = useState<string | null>(null)
 
   const load = useCallback(async () => {
     try {
@@ -184,6 +194,70 @@ export default function EvidencesPage() {
       selectedOrd === 'SIN-ORD' ? !r.ordCode : r.ordCode === selectedOrd
     )
   }, [rows, selectedOrd])
+
+  const toggleRowSelected = (assetId: string) => {
+    setSelectedAssetIds((prev) => {
+      const next = new Set(prev)
+      if (next.has(assetId)) next.delete(assetId)
+      else next.add(assetId)
+      return next
+    })
+  }
+
+  const allDetailSelected =
+    detailRows.length > 0 && detailRows.every((r) => selectedAssetIds.has(r.assetId))
+
+  const toggleSelectAllDetail = () => {
+    if (allDetailSelected) {
+      setSelectedAssetIds(new Set())
+      return
+    }
+    setSelectedAssetIds(new Set(detailRows.map((r) => r.assetId)))
+  }
+
+  const openReportEdit = (row: WipeOrderRow) => {
+    setEditTargetIds([row.assetId])
+    setEditBulk(false)
+    setReportForm(rowToEvidenceForm(row))
+    setReportError(null)
+  }
+
+  const openBulkReportEdit = () => {
+    const ids = Array.from(selectedAssetIds)
+    if (!ids.length) return
+    setEditTargetIds(ids)
+    setEditBulk(true)
+    setReportForm(emptyEvidenceReportForm())
+    setReportError(null)
+  }
+
+  const closeReportEdit = () => {
+    setEditTargetIds([])
+    setReportError(null)
+  }
+
+  const saveReportEdit = async () => {
+    if (!editTargetIds.length) return
+    try {
+      setSavingReport(true)
+      setReportError(null)
+      const patch = formToPatch(reportForm, editBulk ? 'bulk' : 'single')
+      const response = await fetch('/api/wipe/update-evidence-report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ assetIds: editTargetIds, ...patch }),
+      })
+      const data = await response.json()
+      if (!response.ok) throw new Error(data.error || 'No se pudo guardar')
+      closeReportEdit()
+      if (editBulk) setSelectedAssetIds(new Set())
+      await load()
+    } catch (err) {
+      setReportError(err instanceof Error ? err.message : 'Error desconocido')
+    } finally {
+      setSavingReport(false)
+    }
+  }
 
   const openClassify = (row: WipeOrderRow) => {
     setClassifying(row)
@@ -275,7 +349,7 @@ export default function EvidencesPage() {
       <PageHeader
         icon={Shield}
         title="Evidencias de Borrado"
-        subtitle="Resumen por ORD · detalle por equipo · link al PDF del certificado"
+        subtitle="Resumen por ORD (recibidos + certificados PDF) · detalle por equipo"
         variant="blue"
         actions={
           <div className="flex flex-wrap items-center gap-2">
@@ -317,11 +391,11 @@ export default function EvidencesPage() {
 
         {loading ? (
           <div className="flex items-center justify-center py-24 text-sm text-gray-600">
-            Armando órdenes desde certificados PDF…
+            Armando órdenes (recepción + certificados PDF)…
           </div>
         ) : orders.length === 0 ? (
           <div className="rounded border border-gray-400 bg-white py-20 text-center text-sm text-gray-500">
-            Sin evidencias aún. Sube certificados en{' '}
+            Sin órdenes ORD en recepción ni certificados. Recibe un ticket con ORD o sube PDF en{' '}
             <span className="font-bold">Borrado → Captura lote</span>.
           </div>
         ) : (
@@ -412,7 +486,18 @@ export default function EvidencesPage() {
                 {' · '}
                 {detailRows.length} PDF / equipo(s)
               </p>
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
+                {selectedAssetIds.size > 0 && (
+                  <button
+                    type="button"
+                    onClick={openBulkReportEdit}
+                    className="inline-flex items-center gap-1 rounded bg-[#5b2c6f] px-2 py-1 text-[10px] font-bold uppercase text-white"
+                  >
+                    <Pencil className="h-3 w-3" />
+                    Editar {selectedAssetIds.size} seleccionado
+                    {selectedAssetIds.size === 1 ? '' : 's'}
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => void exportExcel('selected')}
@@ -446,7 +531,22 @@ export default function EvidencesPage() {
                     rowSpan={3}
                     className={cn(
                       thBase,
-                      'sticky left-0 z-20 bg-[#c00000] text-white w-[72px] shadow-[2px_0_4px_rgba(0,0,0,0.12)]'
+                      'sticky left-0 z-30 bg-[#333] text-white w-9 shadow-[2px_0_4px_rgba(0,0,0,0.12)]'
+                    )}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={allDetailSelected}
+                      onChange={toggleSelectAllDetail}
+                      title="Seleccionar todas las filas"
+                      className="h-3.5 w-3.5 cursor-pointer"
+                    />
+                  </th>
+                  <th
+                    rowSpan={3}
+                    className={cn(
+                      thBase,
+                      'sticky left-9 z-20 bg-[#c00000] text-white w-[72px] shadow-[2px_0_4px_rgba(0,0,0,0.12)]'
                     )}
                   >
                     PDF
@@ -546,7 +646,7 @@ export default function EvidencesPage() {
 
               <tbody>
                 {detailRows.map((r) => {
-                  const device = r.device || mapDeviceLabel(r.prefix)
+                  const device = r.device || mapDeviceLabel(r.prefix, null, r.make, r.model)
                   const weight = cell(r.weightLbs) || kgToLbs(r.weightKg)
                   const ram = r.ramCapacityGb
                     ? /gb/i.test(r.ramCapacityGb)
@@ -556,11 +656,31 @@ export default function EvidencesPage() {
                   const finalStatus = r.finalStatus || mapFinalStatus(r.status)
                   const pdfName = `wipe-${r.serialNumber || r.evidenceId}.pdf`
                   return (
-                  <tr key={r.evidenceId} className="hover:bg-[#deebf7]/70">
+                  <tr
+                    key={r.evidenceId}
+                    className={cn(
+                      'hover:bg-[#deebf7]/70',
+                      selectedAssetIds.has(r.assetId) && 'bg-[#fff2cc]/80'
+                    )}
+                  >
                     <td
                       className={cn(
                         tdBase,
-                        'sticky left-0 z-10 text-center bg-white shadow-[2px_0_4px_rgba(0,0,0,0.08)]'
+                        'sticky left-0 z-10 text-center bg-inherit shadow-[2px_0_4px_rgba(0,0,0,0.08)]'
+                      )}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={selectedAssetIds.has(r.assetId)}
+                        onChange={() => toggleRowSelected(r.assetId)}
+                        className="h-3.5 w-3.5 cursor-pointer"
+                        aria-label={`Seleccionar ${r.serialNumber || r.assetId}`}
+                      />
+                    </td>
+                    <td
+                      className={cn(
+                        tdBase,
+                        'sticky left-9 z-10 text-center bg-inherit shadow-[2px_0_4px_rgba(0,0,0,0.08)]'
                       )}
                     >
                       {r.evidenceUrl ? (
@@ -583,15 +703,26 @@ export default function EvidencesPage() {
                     <td className={cn(tdBase, 'font-bold text-[#5b2c6f]')}>{cell(r.ordCode)}</td>
                     <td className={cn(tdBase, 'text-center font-bold')}>{cell(r.classificationRec)}</td>
                     <td className={cn(tdBase, 'text-center')}>
-                      <button
-                        type="button"
-                        onClick={() => openClassify(r)}
-                        className="inline-flex items-center gap-0.5 rounded bg-[#548235] px-1.5 py-0.5 text-[9px] font-bold uppercase text-white"
-                        title="Completar REC, C, F, R2, Sanitization"
-                      >
-                        <Tags className="h-3 w-3" />
-                        Completar
-                      </button>
+                      <div className="flex flex-col items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => openClassify(r)}
+                          className="inline-flex items-center gap-0.5 rounded bg-[#548235] px-1.5 py-0.5 text-[9px] font-bold uppercase text-white"
+                          title="Completar REC, C, F, R2, Sanitization"
+                        >
+                          <Tags className="h-3 w-3" />
+                          Completar
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => openReportEdit(r)}
+                          className="inline-flex items-center gap-0.5 rounded bg-[#5b2c6f] px-1.5 py-0.5 text-[9px] font-bold uppercase text-white"
+                          title="Editar modelo comercial, CPU, RAM, etc."
+                        >
+                          <Pencil className="h-3 w-3" />
+                          Editar
+                        </button>
+                      </div>
                     </td>
 
                     <td className={cn(tdBase, 'text-center')}>{cell(device)}</td>
@@ -668,6 +799,27 @@ export default function EvidencesPage() {
           </div>
         )}
       </main>
+
+      {editTargetIds.length > 0 && (
+        <EvidenceReportEditModal
+          title={editBulk ? 'Edición masiva de reporte' : 'Editar reporte ITAD'}
+          subtitle={
+            editBulk
+              ? `${editTargetIds.length} equipo(s) seleccionado(s)`
+              : (() => {
+                  const row = detailRows.find((r) => r.assetId === editTargetIds[0])
+                  return `${row?.serialNumber || editTargetIds[0]} · ${row?.ordCode || 'sin ORD'}`
+                })()
+          }
+          bulk={editBulk}
+          form={reportForm}
+          setForm={setReportForm}
+          error={reportError}
+          saving={savingReport}
+          onClose={closeReportEdit}
+          onSave={() => void saveReportEdit()}
+        />
+      )}
 
       {classifying && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">

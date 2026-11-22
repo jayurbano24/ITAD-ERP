@@ -296,6 +296,7 @@ export async function GET(request: Request) {
             processor: (meta.processor as string) || '',
             bios_version: (meta.bios_version as string) || '',
             observations: (meta.observations as string) || '',
+            is_additional: Boolean(meta.additional),
             validation_status: item.validation_status,
             classification_rec: (meta.classification_rec as string) || null,
             classification_f: item.classification_f,

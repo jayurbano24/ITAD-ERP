@@ -153,6 +153,60 @@ function parsePickupDateToIso(raw: string | null): string | null {
   return null
 }
 
+/** Filas tipo PDF donde "Serial Number" y la serie van en líneas distintas */
+function extractSerialNumbersFromLabelLines(text: string): string[] {
+  const lines = text.split(/\r?\n/).map(cleanLine).filter(Boolean)
+  const serials: string[] = []
+
+  const isSerialLabel = (line: string) =>
+    /^serial(\s*number|\s*no\.?)?$/i.test(line) ||
+    /^n[uú]mero\s+de\s+serie$/i.test(line) ||
+    /^service\s*tag$/i.test(line)
+
+  const isServiceTag = (token: string) => {
+    const t = token.replace(/[^A-Za-z0-9]/g, '').toUpperCase()
+    if (t.length < 5 || t.length > 12) return null
+    if (!/[A-Z]/.test(t) || !/\d/.test(t)) return null
+    if (/^(ORD|TRM|ISO|GCTALENTU|WISTEK|EVERNEC|CERTID)$/i.test(t)) return null
+    return t
+  }
+
+  for (let i = 0; i < lines.length; i++) {
+    if (!isSerialLabel(lines[i])) continue
+    for (let j = i + 1; j < Math.min(i + 5, lines.length); j++) {
+      const tag = isServiceTag(lines[j])
+      if (tag) {
+        serials.push(tag)
+        break
+      }
+    }
+  }
+
+  return Array.from(new Set(serials))
+}
+
+/** Dell / laptop service tags (6–10 alfanum.) después de leer PDF u OCR ruidoso */
+function extractLikelyServiceTag(text: string): string | null {
+  const reject = (t: string) =>
+    /^(ORD\d+|TRM[A-Z0-9]+|GCTALENTU|WISTEK|EVERNEC|CERTID|UBER|LATITUDE|LAPTOP|DELL|MAKE|MODEL|OCTOBER)$/i.test(
+      t
+    )
+  const candidates: string[] = []
+  for (const rawLine of text.split(/\r?\n/).map(cleanLine)) {
+    if (rawLine.length < 5) continue
+    for (const token of rawLine.split(/\s+/)) {
+      const t = token.replace(/[^A-Za-z0-9]/g, '').toUpperCase()
+      if (t.length < 6 || t.length > 12) continue
+      if (reject(t)) continue
+      if (!/[A-Z]/.test(t) || !/\d/.test(t)) continue
+      candidates.push(t)
+    }
+  }
+  const unique = Array.from(new Set(candidates))
+  const dellish = unique.find((t) => /^[A-Z0-9]{7}$/.test(t) && /[A-Z]/.test(t) && /\d/.test(t))
+  return dellish || unique[0] || null
+}
+
 function extractOrderNumber(text: string): string | null {
   const match = text.match(/\b(ORD\s*[-]?\s*\d{4,})\b/i)
   if (!match) return null
@@ -208,6 +262,33 @@ function extractItems(text: string): ReceiptEquipmentItem[] {
     }
   }
 
+  const labeledSerials = extractSerialNumbersFromLabelLines(text)
+  if (labeledSerials.length > 0) {
+    for (let i = 0; i < notes.length; i++) {
+      if (!notes[i].serial && labeledSerials[i]) {
+        notes[i].serial = labeledSerials[i]
+      }
+    }
+    while (notes.length < labeledSerials.length) {
+      notes.push({
+        product: detectProduct(text),
+        make: detectBrand(text),
+        model: detectModel(text),
+        serial: labeledSerials[notes.length],
+        quantity: 1,
+      })
+    }
+    if (notes.length === 0) {
+      notes.push({
+        product: detectProduct(text) || 'Laptop',
+        make: detectBrand(text) || 'Dell',
+        model: detectModel(text),
+        serial: labeledSerials[0],
+        quantity: 1,
+      })
+    }
+  }
+
   if (notes.length > 0) {
     // Enrich first item with dictionary detection when OCR cells are noisy
     const first = notes[0]
@@ -237,13 +318,19 @@ function extractItems(text: string): ReceiptEquipmentItem[] {
       requireSeparator: true,
     }) || detectProduct(text)
 
-  if (make || model || product || serial) {
+  let resolvedSerial = serial ? serial.toUpperCase() : null
+
+  if (!resolvedSerial) {
+    resolvedSerial = extractLikelyServiceTag(text)
+  }
+
+  if (make || model || product || resolvedSerial) {
     return [
       {
         product,
         make,
         model: model ? normalizeModelToken(model) : null,
-        serial: serial ? serial.toUpperCase() : null,
+        serial: resolvedSerial,
         quantity: 1,
       },
     ]

@@ -37,10 +37,19 @@ export default function QuotationLetterhead({ className }: Props) {
             <p>{TECHCORPS_HEADER_CONTACT_LINES[1]}</p>
             <p>
               <a
-                href={`mailto:${h.email}`}
+                href={h.websiteUrl}
+                target="_blank"
+                rel="noopener noreferrer"
                 className="text-indigo-600 dark:text-indigo-400 hover:underline font-medium"
               >
-                {TECHCORPS_HEADER_CONTACT_LINES[2]}
+                {h.websiteDisplay}
+              </a>
+              <span className="text-gray-400 dark:text-surface-500 mx-1.5">·</span>
+              <a
+                href={`mailto:${h.email}`}
+                className="text-indigo-600 dark:text-indigo-400 hover:underline"
+              >
+                {h.email}
               </a>
               <span className="text-gray-400 dark:text-surface-500 mx-1.5">·</span>
               <span className="text-gray-500 dark:text-surface-500">{h.hours}</span>

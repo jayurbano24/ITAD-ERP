@@ -7,7 +7,13 @@ import {
   Shield,
   AlertTriangle
 } from 'lucide-react'
-import { getSystemUsers, getAllCatalogs, getCompanySettings, checkAdminConfig } from './actions'
+import {
+  getSystemUsers,
+  getAllCatalogs,
+  getCompanySettings,
+  checkAdminConfig,
+} from './actions'
+import { getFiscalSatCatalogStatus } from '../general/actions'
 import { ConfigTabs } from './components/ConfigTabs'
 import { Text } from '@/components/ui/Text'
 
@@ -36,10 +42,12 @@ export default async function ConfiguracionUsuariosPage() {
   const isConfigured = await checkAdminConfig()
 
   // Obtener datos
-  const [usersResult, catalogs, companySettings] = await Promise.all([
+  const isSuperAdmin = profile?.role === 'super_admin'
+  const [usersResult, catalogs, companySettings, fiscalCatalog] = await Promise.all([
     getSystemUsers(),
     getAllCatalogs(),
-    getCompanySettings()
+    getCompanySettings(),
+    isSuperAdmin ? getFiscalSatCatalogStatus() : Promise.resolve(null),
   ])
 
   const users = usersResult.data || []
@@ -93,6 +101,7 @@ export default async function ConfiguracionUsuariosPage() {
         users={users}
         catalogs={catalogs}
         companySettings={companySettings}
+        fiscalCatalog={fiscalCatalog}
         isConfigured={isConfigured}
       />
     </div>

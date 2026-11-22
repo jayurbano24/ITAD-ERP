@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import { normalizeSerialInput, resolveSerialLookup } from '@/lib/inventario/resolveSerialLookup';
 
 export async function GET(request: NextRequest) {
   const { searchParams } = new URL(request.url);
@@ -108,48 +109,31 @@ export async function GET(request: NextRequest) {
     return NextResponse.json([], { status: 200 });
   }
 
-  // Normalizar serie
-  const normalizedSerie = serie.toUpperCase().replace(/\s+/g, '');
+  const scannedAs = normalizeSerialInput(serie);
+  const resolved = await resolveSerialLookup(supabase, scannedAs);
 
-  // Primero buscar el asset por serial_number o internal_tag
-  let { data: assets, error: assetError } = await supabase
-    .from('assets')
-    .select('id, serial_number, internal_tag')
-    .or(`serial_number.eq.${normalizedSerie},internal_tag.eq.${normalizedSerie}`)
-    .limit(1);
-
-  if (assetError) {
-    console.error('Error searching asset:', assetError);
-    return NextResponse.json([], { status: 500 });
+  if (!resolved) {
+    return NextResponse.json([], { status: 200 });
   }
 
-  let assetId: string | null = null;
-  let serialNumber: string = normalizedSerie;
-  let ticketId: string | null = null;
+  let assetId: string | null = resolved.assetId;
+  let serialNumber: string = resolved.serialNumber;
+  let ticketId: string | null = resolved.ticketId ?? null;
 
-  if (assets && assets.length > 0) {
-    assetId = assets[0].id;
-    serialNumber = assets[0].serial_number || assets[0].internal_tag || normalizedSerie;
-  } else {
-    // Si no se encuentra en assets, buscar en ticket_items
-    const { data: ticketItems, error: ticketError } = await supabase
-      .from('ticket_items')
-      .select('id, collected_serial, ticket_id, asset_id')
-      .eq('collected_serial', normalizedSerie)
+  if (!assetId) {
+    const { data: assets, error: assetError } = await supabase
+      .from('assets')
+      .select('id, serial_number, internal_tag')
+      .eq('serial_number', serialNumber)
       .limit(1);
 
-    if (ticketError) {
-      console.error('Error searching ticket_items:', ticketError);
-    } else if (ticketItems && ticketItems.length > 0) {
-      const ticketItem = ticketItems[0];
-      serialNumber = ticketItem.collected_serial || normalizedSerie;
-      ticketId = ticketItem.ticket_id;
-
-      if (ticketItem.asset_id) {
-        assetId = ticketItem.asset_id;
-      }
-    } else {
-      return NextResponse.json([], { status: 200 });
+    if (assetError) {
+      console.error('Error searching asset:', assetError);
+      return NextResponse.json([], { status: 500 });
+    }
+    if (assets?.[0]?.id) {
+      assetId = assets[0].id;
+      serialNumber = assets[0].serial_number || serialNumber;
     }
   }
 

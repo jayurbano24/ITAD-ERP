@@ -4,6 +4,7 @@ import { cn } from '@/lib/utils'
 import { getQuotations } from './actions'
 import { QUOTATION_STATUS_LABELS } from '@/lib/ventas/quotationStatus'
 import QuotationsTable from './QuotationsTable'
+import DownloadQuotationsExcelButton from './DownloadQuotationsExcelButton'
 
 export const dynamic = 'force-dynamic'
 
@@ -53,13 +54,19 @@ export default async function CotizacionesPage({
             </p>
           </div>
         </div>
-        <Link
-          href="/dashboard/ventas/cotizaciones/nuevo"
-          className="inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold px-4 py-2.5 shadow-sm"
-        >
-          <Plus className="w-4 h-4" />
-          Nueva cotización
-        </Link>
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          <DownloadQuotationsExcelButton
+            quotations={quotations}
+            exportHint="Exporta las cotizaciones del filtro actual (estado y búsqueda)"
+          />
+          <Link
+            href="/dashboard/ventas/cotizaciones/nuevo"
+            className="inline-flex items-center justify-center gap-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-semibold px-4 py-2.5 shadow-sm"
+          >
+            <Plus className="w-4 h-4" />
+            Nueva cotización
+          </Link>
+        </div>
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-1.5">
@@ -88,7 +95,7 @@ export default async function CotizacionesPage({
         <input
           name="q"
           defaultValue={q}
-          placeholder="Buscar por número, título..."
+          placeholder="Nº cotización (COT-…), nombre, NIT o teléfono del cliente"
           className="flex-1 rounded-lg border border-gray-300 dark:border-surface-600 bg-white dark:bg-white px-3 py-2 text-sm text-gray-900 placeholder:text-gray-500"
         />
         <button

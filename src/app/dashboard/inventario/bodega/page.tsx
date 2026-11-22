@@ -289,7 +289,11 @@ export default async function BodegaPage({
     for (const asset of filteredAssets) {
       const specs = (asset.specifications ?? null) as Record<string, unknown> | null
       const projectRaw =
-        specs?.project_number ?? specs?.invoice_ref ?? specs?.project_hash ?? null
+        specs?.project_number ??
+        specs?.source_order_number ??
+        specs?.invoice_ref ??
+        specs?.project_hash ??
+        null
       const project =
         projectRaw != null && String(projectRaw).trim() !== ''
           ? String(projectRaw).trim()
@@ -529,7 +533,7 @@ export default async function BodegaPage({
               type="search"
               name="search"
               defaultValue={searchTerm}
-              placeholder="Ej. DXA123, iPhone..."
+              placeholder="Ej. PF3ADJ1H o serie completa"
               className="w-full bg-white dark:bg-[#0f1419] border-2 border-gray-100 dark:border-gray-800 rounded-2xl px-4 py-3 text-sm font-bold text-gray-900 dark:text-white placeholder:text-gray-500 focus:outline-none focus:border-indigo-500/50 transition-all"
             />
           </div>

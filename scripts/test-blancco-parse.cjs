@@ -1,7 +1,13 @@
 /* eslint-disable @typescript-eslint/no-require-imports */
 const fs = require('fs')
 const path = require('path')
+const { pathToFileURL } = require('url')
 const { PDFParse } = require('pdf-parse')
+
+const pdfjsPkg = require.resolve('pdfjs-dist/package.json')
+PDFParse.setWorker(
+  pathToFileURL(path.join(path.dirname(pdfjsPkg), 'build', 'pdf.worker.mjs')).href
+)
 
 // Inline: load parseWipeReportText via dynamic transpile-free path —
 // duplicate call by evaluating the built source through Function is fragile;

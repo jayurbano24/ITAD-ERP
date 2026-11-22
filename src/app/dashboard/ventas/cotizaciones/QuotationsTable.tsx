@@ -1,6 +1,6 @@
 'use client'
 
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { FileText, GitBranchPlus, Loader2, Download, Trash2, Eye, Percent } from 'lucide-react'
@@ -25,6 +25,7 @@ import {
   type QuotationPrintPayload,
 } from '@/lib/ventas/printQuotationPdf'
 import QuotationPdfViewerModal from './components/QuotationPdfViewerModal'
+import QuotationBarcode from './components/QuotationBarcode'
 import QuotationAvanceModal from './components/QuotationAvanceModal'
 import QuotationDiscountModal, { type DiscountFormValue } from './components/QuotationDiscountModal'
 
@@ -38,7 +39,7 @@ const EXCEL_HEADER_LABEL =
 const EXCEL_HEADER_FILTER =
   'border-gray-400 dark:border-surface-500 text-indigo-600 dark:text-indigo-300 hover:border-indigo-500 hover:bg-indigo-500/10'
 
-type ColumnId = 'numero' | 'titulo' | 'creado' | 'solicitante' | 'pago' | 'monto' | 'estado' | 'fecha'
+type ColumnId = 'numero' | 'creado' | 'solicitante' | 'pago' | 'monto' | 'estado' | 'fecha'
 
 function creatorLabel(row: SalesQuotation): string {
   return row.creator?.full_name?.trim() || '—'
@@ -104,8 +105,6 @@ function getColumnValue(row: SalesQuotation, columnId: ColumnId): string {
   switch (columnId) {
     case 'numero':
       return row.quote_number || EMPTY
-    case 'titulo':
-      return row.title?.trim() || EMPTY
     case 'creado':
       return creatorLabel(row)
     case 'solicitante':
@@ -163,7 +162,6 @@ type Props = {
 
 const INITIAL_FILTERS: Record<ColumnId, Set<string> | null> = {
   numero: null,
-  titulo: null,
   creado: null,
   solicitante: null,
   pago: null,
@@ -174,7 +172,6 @@ const INITIAL_FILTERS: Record<ColumnId, Set<string> | null> = {
 
 const COLUMN_LABELS: Record<ColumnId, string> = {
   numero: 'Número',
-  titulo: 'Título',
   creado: 'Creado por',
   solicitante: 'Solicitante',
   pago: 'Método pago',
@@ -182,6 +179,13 @@ const COLUMN_LABELS: Record<ColumnId, string> = {
   estado: 'Estado',
   fecha: 'Fecha',
 }
+
+const PAGE_SIZE_OPTIONS = [15, 18, 20] as const
+type PageSize = (typeof PAGE_SIZE_OPTIONS)[number]
+/** Altura por fila de datos (rem) para viewport fijo */
+const ROW_HEIGHT_REM = 2.125
+const TABLE_HEAD_REM = 2.75
+const TABLE_CAPTION_REM = 1.75
 
 export default function QuotationsTable({
   rows,
@@ -202,6 +206,8 @@ export default function QuotationsTable({
   const [pdfPreviewOpen, setPdfPreviewOpen] = useState(false)
   const [pdfPreviewPayload, setPdfPreviewPayload] = useState<QuotationPrintPayload | null>(null)
   const [viewBusyId, setViewBusyId] = useState<string | null>(null)
+  const [pageSize, setPageSize] = useState<PageSize>(18)
+  const [page, setPage] = useState(1)
 
   const displayedRows = useMemo(() => {
     let list = rows.filter((row) => matchesFilters(row, columnFilters))
@@ -210,6 +216,28 @@ export default function QuotationsTable({
     }
     return list
   }, [rows, columnFilters, sort])
+
+  const totalPages = Math.max(1, Math.ceil(displayedRows.length / pageSize))
+  const safePage = Math.min(page, totalPages)
+
+  useEffect(() => {
+    setPage(1)
+  }, [rows, columnFilters, sort, pageSize])
+
+  useEffect(() => {
+    if (page > totalPages) setPage(totalPages)
+  }, [page, totalPages])
+
+  const paginatedRows = useMemo(() => {
+    const start = (safePage - 1) * pageSize
+    return displayedRows.slice(start, start + pageSize)
+  }, [displayedRows, pageSize, safePage])
+
+  const pageFrom = displayedRows.length === 0 ? 0 : (safePage - 1) * pageSize + 1
+  const pageTo = Math.min(safePage * pageSize, displayedRows.length)
+
+  const tableViewportHeightRem =
+    (caption ? TABLE_CAPTION_REM : 0) + TABLE_HEAD_REM + pageSize * ROW_HEIGHT_REM
 
   const setFilter = (columnId: ColumnId, next: Set<string> | null) => {
     setColumnFilters((prev) => ({ ...prev, [columnId]: next }))
@@ -342,18 +370,24 @@ export default function QuotationsTable({
         <p className="text-sm text-red-600 bg-red-50 dark:bg-red-500/10 px-3 py-2 rounded-lg mb-2">{error}</p>
       )}
 
-      <div className="flex-1 min-h-0 max-w-full overflow-x-auto overflow-y-auto rounded-xl border border-gray-200 dark:border-surface-700 bg-white dark:bg-surface-900 shadow-sm">
+      <div className="flex flex-col flex-1 min-h-0 max-w-full rounded-xl border border-gray-200 dark:border-surface-700 bg-white dark:bg-surface-900 shadow-sm overflow-hidden">
+        <div
+          className="min-h-0 max-w-full overflow-x-auto overflow-y-auto"
+          style={{
+            height: `${tableViewportHeightRem}rem`,
+            maxHeight: `${tableViewportHeightRem}rem`,
+          }}
+        >
         <table className="w-full min-w-[920px] max-w-full table-fixed text-[12px] leading-tight">
           <colgroup>
-            <col className="w-[8%]" />
-            <col className="w-[15%]" />
-            <col className="w-[8%]" />
-            <col className="w-[14%]" />
             <col className="w-[9%]" />
             <col className="w-[9%]" />
-            <col className="w-[10%]" />
-            <col className="w-[11%]" />
             <col className="w-[16%]" />
+            <col className="w-[10%]" />
+            <col className="w-[10%]" />
+            <col className="w-[10%]" />
+            <col className="w-[12%]" />
+            <col className="w-[18%]" />
           </colgroup>
           {caption ? (
             <caption className="text-left px-2 py-1.5 text-xs font-bold text-gray-700 dark:text-surface-300 caption-top border-b border-gray-100 dark:border-surface-800">
@@ -368,7 +402,6 @@ export default function QuotationsTable({
           <thead className="border-b-2 border-indigo-200 dark:border-indigo-500/40 sticky top-0 z-[2]">
             <tr className="text-left">
               {headerCell('numero')}
-              {headerCell('titulo')}
               {headerCell('creado')}
               {headerCell('solicitante')}
               {headerCell('pago')}
@@ -381,14 +414,14 @@ export default function QuotationsTable({
             </tr>
           </thead>
           <tbody>
-            {displayedRows.length === 0 ? (
+            {paginatedRows.length === 0 ? (
               <tr>
-                <td colSpan={9} className="px-3 py-8 text-center text-sm text-gray-500">
+                <td colSpan={8} className="px-3 py-8 text-center text-sm text-gray-500">
                   Sin coincidencias con los filtros aplicados.
                 </td>
               </tr>
             ) : (
-              displayedRows.map((row) => (
+              paginatedRows.map((row) => (
                 <tr
                   key={row.id}
                   className={cn(
@@ -398,11 +431,8 @@ export default function QuotationsTable({
                       : 'bg-white dark:bg-surface-900'
                   )}
                 >
-                  <td className="px-1.5 py-1 font-mono text-[11px] font-bold text-indigo-700 dark:text-indigo-300 truncate" title={row.quote_number}>
-                    {row.quote_number}
-                  </td>
-                  <td className="px-1.5 py-1 text-gray-900 dark:text-white font-medium truncate" title={row.title}>
-                    {row.title}
+                  <td className="px-1.5 py-1 align-middle overflow-hidden max-w-0">
+                    <QuotationBarcode quoteNumber={row.quote_number} numberOnly />
                   </td>
                   <td className="px-1.5 py-1 text-gray-800 dark:text-surface-200 truncate font-medium" title={creatorLabel(row)}>
                     {creatorLabel(row)}
@@ -540,6 +570,51 @@ export default function QuotationsTable({
             )}
           </tbody>
         </table>
+        </div>
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-t border-gray-200 dark:border-surface-700 px-2 py-1.5 bg-gray-50/90 dark:bg-surface-950/60 shrink-0">
+          <p className="text-xs font-medium text-gray-600 dark:text-surface-400 tabular-nums">
+            {displayedRows.length === 0
+              ? '0 cotizaciones'
+              : `Mostrando ${pageFrom}–${pageTo} de ${displayedRows.length}`}
+          </p>
+          <div className="flex flex-wrap items-center gap-2">
+            <label className="sr-only" htmlFor="cotizaciones-page-size">
+              Filas por página
+            </label>
+            <select
+              id="cotizaciones-page-size"
+              value={pageSize}
+              onChange={(e) => setPageSize(Number(e.target.value) as PageSize)}
+              className="h-8 rounded-lg border border-gray-200 dark:border-surface-600 bg-white dark:bg-surface-900 px-2 text-xs font-semibold text-gray-800 dark:text-surface-200"
+              title="Filas por página"
+            >
+              {PAGE_SIZE_OPTIONS.map((n) => (
+                <option key={n} value={n}>
+                  {n} / página
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              disabled={safePage <= 1}
+              onClick={() => setPage((p) => Math.max(1, p - 1))}
+              className="h-8 px-3 rounded-lg border border-gray-200 dark:border-surface-600 text-xs font-semibold disabled:opacity-40 hover:bg-white dark:hover:bg-surface-800"
+            >
+              Anterior
+            </button>
+            <span className="text-xs font-bold text-gray-700 dark:text-surface-300 tabular-nums min-w-[96px] text-center">
+              Página {safePage} / {totalPages}
+            </span>
+            <button
+              type="button"
+              disabled={safePage >= totalPages}
+              onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+              className="h-8 px-3 rounded-lg border border-gray-200 dark:border-surface-600 text-xs font-semibold disabled:opacity-40 hover:bg-white dark:hover:bg-surface-800"
+            >
+              Siguiente
+            </button>
+          </div>
+        </div>
       </div>
 
       {deleteFor && (

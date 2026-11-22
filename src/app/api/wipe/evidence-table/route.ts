@@ -1,4 +1,6 @@
 import { createClient } from '@/lib/supabase/server'
+import { mapDeviceLabel } from '@/lib/wipe/exportWipeOrderExcel'
+import { resolveEvidenceDisplayModel } from '@/lib/wipe/resolveWipeDisplayModel'
 import { parseWipeReportPdfBuffer } from '@/lib/wipe/parseWipeReportPdf'
 import { NextResponse } from 'next/server'
 
@@ -32,20 +34,6 @@ type AssetRow = {
   wipe_notes: string | null
   wipe_completed_at: string | null
   specifications: Record<string, unknown> | null
-}
-
-function mapDeviceLabel(prefix: string | null, assetType: string | null): string | null {
-  const src = `${prefix || ''} ${assetType || ''}`.toLowerCase()
-  if (/lap|notebook|elitebook|latitude|thinkpad|macbook/.test(src)) return 'Laptop'
-  if (/des|desktop|tower|optiplex/.test(src)) return 'Desktop'
-  if (/srv|server|poweredge|proliant/.test(src)) return 'Server'
-  if (/tab|tablet|ipad/.test(src)) return 'Tablet'
-  if (/all.?in.?one|aio/.test(src)) return 'All-in-One'
-  if (prefix === 'LAP') return 'Laptop'
-  if (prefix === 'DES') return 'Desktop'
-  if (prefix === 'SRV') return 'Server'
-  if (prefix === 'TAB') return 'Tablet'
-  return prefix || assetType || null
 }
 
 function mapFinalStatus(status: string | null | undefined): string | null {
@@ -224,12 +212,18 @@ export async function GET() {
     const { data: batches } = batchIds.length
       ? await supabase
           .from('batches')
-          .select('id, internal_batch_id, ticket_id')
+          .select('id, internal_batch_id, ticket_id, reception_date')
           .in('id', batchIds)
       : { data: [] }
     const batchOrdMap = new Map(
       (batches || []).map((b) => [b.id as string, extractOrd(b.internal_batch_id as string)])
     )
+    const batchReceptionDateMap = new Map<string, string>()
+    for (const b of batches || []) {
+      if (b.id && (b as { reception_date?: string | null }).reception_date) {
+        batchReceptionDateMap.set(b.id as string, String((b as { reception_date: string }).reception_date))
+      }
+    }
     const ticketIds = Array.from(
       new Set((batches || []).map((b) => b.ticket_id).filter(Boolean) as string[])
     )
@@ -275,10 +269,13 @@ export async function GET() {
       const asset = assetsMap.get(row.asset_id)
       const currentParsed = pickCertificate(row.parsed_json, asset?.specifications)
       const alreadyRich = isCertificateRich(currentParsed)
+      const hasDisplayModel = Boolean((currentParsed as Record<string, unknown>).displayModel)
       const hasErrors =
         Array.isArray(currentParsed.errors) && (currentParsed.errors as unknown[]).length > 0
-      // Re-parsear si falta certificado rico O si aún no hay lista de errores Failed
-      if (alreadyRich && isCertificateRich(asRecord(row.parsed_json)) && hasErrors) continue
+      // Re-parsear si falta certificado rico, nombre comercial o lista de errores Failed
+      if (alreadyRich && hasDisplayModel && isCertificateRich(asRecord(row.parsed_json)) && hasErrors) {
+        continue
+      }
 
       try {
         const response = await fetch(row.file_url, { cache: 'no-store' })
@@ -308,11 +305,13 @@ export async function GET() {
             },
           }
           const wipeNotes = parsed.comments || asset.wipe_notes
+          const displayModel = parsed.displayModel || resolveEvidenceDisplayModel(parsed, asset)
           await supabase
             .from('assets')
             .update({
               specifications: nextSpecs,
               wipe_notes: wipeNotes,
+              ...(displayModel ? { model: displayModel } : {}),
             })
             .eq('id', asset.id)
           asset.specifications = nextSpecs
@@ -337,8 +336,8 @@ export async function GET() {
       }
     }
 
-    const table = Array.from(byAsset.values()).map((ev) => {
-      const asset = assetsMap.get(ev.asset_id)
+    const mapEvidenceRow = (ev: EvidenceRow, assetIn?: AssetRow | undefined) => {
+      const asset = assetIn ?? assetsMap.get(ev.asset_id)
       const parsed = pickCertificate(ev.parsed_json, asset?.specifications)
       const disks = (parsed.disks as Array<Record<string, unknown>> | undefined) || []
       const disk1 = disks[0] || {}
@@ -348,14 +347,21 @@ export async function GET() {
       const ordFromBatch = asset?.batch_id ? batchOrdMap.get(asset.batch_id) || null : null
       const ordFromSpecs = extractOrd(
         String(
-          (asset?.specifications as Record<string, unknown> | null)?.source_order_number ||
+          (asset?.specifications as Record<string, unknown> | null)?.project_number ||
+            (asset?.specifications as Record<string, unknown> | null)?.source_order_number ||
             (asset?.specifications as Record<string, unknown> | null)?.ticket_readable_id ||
             ''
         )
       )
       const ticketMeta = asset?.batch_id ? batchTicketMap.get(asset.batch_id) : null
       const ordFromTicket = extractOrd(
-        String(ticketMeta?.readable_id || ticketMeta?.title || ticketMeta?.description || '')
+        String(
+          (ticketMeta as { xsi_order_number?: string | null } | null | undefined)?.xsi_order_number ||
+            ticketMeta?.readable_id ||
+            ticketMeta?.title ||
+            ticketMeta?.description ||
+            ''
+        )
       )
       const ordCode = ordFromBatch || ordFromTicket || ordFromSpecs || null
 
@@ -377,18 +383,24 @@ export async function GET() {
         asset?.wipe_notes ||
         null
 
+      const specsRoot = (asset?.specifications || {}) as Record<string, unknown>
+      const receptionTest = asRecord(specsRoot.reception_test) || {}
       const ramCapacityGb =
         (parsed.ramCapacityGb as string) || (hw.ram_capacity as string) || null
       const hdd1Serial = (disk1.serial as string) || null
       const wipePass = String(disk1.wipeStatus || asset?.wipe_result || '')
         .toLowerCase()
         .includes('pass')
-      // Si hay wipe Pass y no hay sanitización, sugerir D1 (clear)
+      const hasCert = isCertificateRich(parsed)
+      const displayModel = resolveEvidenceDisplayModel(parsed, asset ?? null)
       const dataSanitization =
         classifications.dataSanitization || (wipePass ? 'D1' : null)
       const memory =
         classifications.memory ||
-        (ramCapacityGb ? 'Yes' : parsed.ramCapacityGb === null ? 'No' : null)
+        cleanClass(receptionTest.memory) ||
+        (ramCapacityGb ? 'Yes' : !hasCert ? 'Pass' : null)
+      const batchReceived =
+        asset?.batch_id != null ? batchReceptionDateMap.get(asset.batch_id) : null
 
       return {
         assetId: ev.asset_id,
@@ -412,10 +424,12 @@ export async function GET() {
         device: mapDeviceLabel(
           (parsed.prefix as string) ||
             (asset?.asset_type?.toUpperCase().includes('LAP') ? 'LAP' : null),
-          asset?.asset_type || null
+          asset?.asset_type || null,
+          (parsed.make as string) || asset?.manufacturer || null,
+          displayModel
         ),
         make: (parsed.make as string) || asset?.manufacturer || null,
-        model: (parsed.model as string) || asset?.model || null,
+        model: displayModel,
         serialNumber: (parsed.serialNumber as string) || asset?.serial_number || null,
         customerAssetTag: (parsed.customerAssetTag as string) || asset?.internal_tag || null,
         mainBoardPart: (parsed.mainBoardPart as string) || null,
@@ -424,14 +438,20 @@ export async function GET() {
         cpu: (parsed.cpu as string) || (hw.processor as string) || null,
         hddCount,
         ssd: (parsed.ssd as string) || (hw.disk_type ? 'Yes' : null),
-        screenSize: (parsed.screenSize as string) || null,
+        screenSize: (parsed.screenSize as string) || (hw.screen_size as string) || null,
         weightLbs: (parsed.weightLbs as string) || null,
         powerOnOverHeat: (parsed.powerOnOverHeat as string) || null,
-        battery: (parsed.battery as string) || null,
-        charger: (parsed.charger as string) || null,
+        battery: (parsed.battery as string) || cleanClass(receptionTest.battery) || null,
+        charger: (parsed.charger as string) || cleanClass(receptionTest.charger) || null,
         screen: (parsed.screen as string) || null,
         keyboard: (parsed.keyboard as string) || null,
-        testDate: (parsed.testDate as string) || asset?.wipe_completed_at || null,
+        testDate:
+          (parsed.testDate as string) ||
+          cleanClass(receptionTest.test_date) ||
+          batchReceived ||
+          asset?.wipe_completed_at ||
+          ev.created_at ||
+          null,
         technicianName: (parsed.technicianName as string) || null,
         comments,
         processedTime: (parsed.processedTime as string) || asset?.wipe_completed_at || null,
@@ -454,7 +474,117 @@ export async function GET() {
         customerName,
         evidenceCreatedAt: ev.created_at,
       }
-    })
+    }
+
+    const table = Array.from(byAsset.values()).map((ev) => mapEvidenceRow(ev, assetsMap.get(ev.asset_id)))
+
+    const coveredAssetIds = new Set(table.map((r) => r.assetId))
+
+    const { data: ordBatchesByCode } = await supabase
+      .from('batches')
+      .select('id, internal_batch_id, ticket_id, reception_date')
+      .ilike('internal_batch_id', 'ORD%')
+
+    const { data: ticketsWithOrd } = await supabase
+      .from('operations_tickets')
+      .select('id, readable_id, title, description, client_id, xsi_order_number')
+      .not('xsi_order_number', 'is', null)
+
+    const missingClientIds = Array.from(
+      new Set(
+        (ticketsWithOrd || [])
+          .map((t) => t.client_id as string | null)
+          .filter((id): id is string => Boolean(id && !clientNameById.has(id)))
+      )
+    )
+    if (missingClientIds.length) {
+      const { data: extraClients } = await supabase
+        .from('crm_entities')
+        .select('id, legal_name, commercial_name')
+        .in('id', missingClientIds)
+      for (const c of extraClients || []) {
+        clientNameById.set(
+          c.id as string,
+          String(c.commercial_name || c.legal_name || '').trim() || null
+        )
+      }
+    }
+    for (const t of ticketsWithOrd || []) {
+      ticketById.set(t.id as string, {
+        ...t,
+        customerName: t.client_id ? clientNameById.get(t.client_id as string) || null : null,
+      })
+    }
+
+    const ordTicketIds = (ticketsWithOrd || []).map((t) => t.id as string)
+    const { data: ordBatchesByTicket } = ordTicketIds.length
+      ? await supabase
+          .from('batches')
+          .select('id, internal_batch_id, ticket_id, reception_date')
+          .in('ticket_id', ordTicketIds)
+      : { data: [] }
+
+    const ordBatchMap = new Map<
+      string,
+      {
+        id: string
+        internal_batch_id: string | null
+        ticket_id: string | null
+        reception_date: string | null
+      }
+    >()
+    for (const b of [...(ordBatchesByCode || []), ...(ordBatchesByTicket || [])]) {
+      if (b?.id) ordBatchMap.set(b.id as string, b)
+    }
+
+    for (const b of Array.from(ordBatchMap.values())) {
+      if (!b?.id) continue
+      if (b.reception_date) {
+        batchReceptionDateMap.set(b.id, String(b.reception_date))
+      }
+      const ordFromBatchCode = extractOrd(b.internal_batch_id as string)
+      const ticket =
+        b.ticket_id != null ? ticketById.get(b.ticket_id as string) : null
+      const ordFromTicketXsi = ticket
+        ? extractOrd(String((ticket as { xsi_order_number?: string | null }).xsi_order_number || ''))
+        : null
+      const ord = ordFromBatchCode || ordFromTicketXsi
+      if (ord) batchOrdMap.set(b.id as string, ord)
+      if (ticket) {
+        batchTicketMap.set(b.id as string, ticket)
+      }
+    }
+
+    const ordBatchIdList = Array.from(ordBatchMap.keys())
+    if (ordBatchIdList.length) {
+      const { data: receivedAssets } = await supabase
+        .from('assets')
+        .select(
+          'id, serial_number, internal_tag, manufacturer, model, asset_type, color, status, sales_price, batch_id, wipe_certificate_id, wipe_software, wipe_result, wipe_notes, wipe_completed_at, specifications, created_at'
+        )
+        .in('batch_id', ordBatchIdList)
+
+      for (const asset of (receivedAssets || []) as AssetRow[]) {
+        if (coveredAssetIds.has(asset.id)) continue
+        const batchInfo = asset.batch_id ? ordBatchMap.get(asset.batch_id) : null
+        const pseudoEv: EvidenceRow = {
+          id: `received-${asset.id}`,
+          asset_id: asset.id,
+          type: 'pending',
+          file_name: null,
+          file_url: null,
+          parsed_json: null,
+          created_at:
+            batchInfo?.reception_date ||
+            asset.wipe_completed_at ||
+            (asset as AssetRow & { created_at?: string | null }).created_at ||
+            null,
+        }
+        assetsMap.set(asset.id, asset)
+        table.push(mapEvidenceRow(pseudoEv, asset))
+        coveredAssetIds.add(asset.id)
+      }
+    }
 
     // Resumen por ORD para la vista de órdenes
     type OrdSummary = {

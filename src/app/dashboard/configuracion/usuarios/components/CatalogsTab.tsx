@@ -1,6 +1,7 @@
 'use client'
 
 import { useMemo, useState } from 'react'
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import {
   Plus,
@@ -20,7 +21,9 @@ import {
   PlugZap,
   Keyboard,
   HardDrive,
-  BrainCircuit
+  BrainCircuit,
+  ShieldCheck,
+  ArrowRight,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Text } from '@/components/ui/Text'
@@ -40,9 +43,11 @@ import {
   type ModelItem,
   type AccessoryItem
 } from '../actions'
+import type { FiscalSatCatalogStatus } from '../../general/actions'
 
 interface CatalogsTabProps {
   catalogs: AllCatalogs
+  fiscalCatalog?: FiscalSatCatalogStatus | null
 }
 
 type CatalogType =
@@ -71,7 +76,7 @@ interface CatalogConfig {
   isSpecial?: boolean
 }
 
-export function CatalogsTab({ catalogs }: CatalogsTabProps) {
+export function CatalogsTab({ catalogs, fiscalCatalog = null }: CatalogsTabProps) {
   // Funciones de importación/exportación para catálogos
   const handleExportCatalog = (key: CatalogType, items: CatalogItem[]) => {
     if (items.length === 0) return;
@@ -414,9 +419,54 @@ export function CatalogsTab({ catalogs }: CatalogsTabProps) {
   }
 
   return (
-    <>
-      {/* Grid de Catálogos */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+  <>
+      <div className="space-y-8 pb-20 max-w-[1600px]">
+        <section>
+          <Text variant="label" className="text-amber-600 dark:text-amber-400 font-black uppercase tracking-widest mb-3 block">
+            Fiscal
+          </Text>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+            <Link
+              href="/dashboard/configuracion/general?tab=fiscal"
+              className="bg-white dark:bg-[#1a1f2e] border border-amber-500/30 rounded-2xl p-5 hover:border-amber-500/60 transition-all shadow-sm group"
+            >
+              <div className="flex items-start justify-between mb-3">
+                <div className="p-2.5 rounded-xl bg-amber-500/20">
+                  <ShieldCheck className="w-5 h-5 text-amber-500" />
+                </div>
+                <Text variant="h2" className="text-2xl font-black tabular-nums">
+                  {fiscalCatalog?.agentCount?.toLocaleString('es-GT') ?? '—'}
+                </Text>
+              </div>
+              <Text variant="body" className="font-black uppercase tracking-tight mb-1 block">
+                Agentes retenedores
+              </Text>
+              <Text variant="muted" className="text-xs mb-4 line-clamp-2 block">
+                Listado SAT (PDF). Valida NIT en ventas y retención de IVA.
+              </Text>
+              <p className="text-[10px] font-bold text-gray-500 dark:text-surface-400 mb-4">
+                {fiscalCatalog?.lastSyncAt
+                  ? `Actualizado: ${new Date(fiscalCatalog.lastSyncAt).toLocaleString('es-GT', { dateStyle: 'short', timeStyle: 'short' })}`
+                  : 'Sin cargar — sube el PDF en Configuración → General → Fiscal'}
+              </p>
+              <span className="flex items-center justify-center gap-2 w-full px-3 py-2 bg-amber-600 text-white rounded-xl text-xs font-black uppercase tracking-widest group-hover:bg-amber-500">
+                Administrar
+                <ArrowRight className="w-4 h-4" />
+              </span>
+            </Link>
+          </div>
+        </section>
+
+        <section>
+          <div className="flex flex-wrap items-end justify-between gap-2 mb-3">
+            <Text variant="label" className="text-emerald-600 dark:text-emerald-400 font-black uppercase tracking-widest block">
+              Maestros (inventario, taller, logística)
+            </Text>
+            <Text variant="muted" className="text-xs block">
+              {catalogConfigs.length} catálogos — desplázate hacia abajo para ver todos
+            </Text>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         {catalogConfigs.map((config) => (
           <div
             key={config.key}
@@ -508,6 +558,8 @@ export function CatalogsTab({ catalogs }: CatalogsTabProps) {
             </div>
           </div>
         ))}
+          </div>
+        </section>
       </div>
 
       {/* Modal Ver Lista */}

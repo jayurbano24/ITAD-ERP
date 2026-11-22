@@ -6,6 +6,14 @@ import {
   buildWarrantyPayloadFromSaleOrder,
   type WarrantyPrintPayload,
 } from '@/lib/ventas/printWarrantyPolicy'
+import { computeQuotationTotalsWithDiscount } from '@/lib/ventas/quotationIva'
+import { lookupWithholdingAgent } from '@/lib/fiscal/lookupWithholdingAgent'
+import { normalizeNitForLookup } from '@/lib/fiscal/nitGt'
+import {
+  computeSaleWithholdingExportFields,
+  normalizeNitKeysForBatch,
+  type SaleWithholdingExportFields,
+} from '@/lib/fiscal/saleWithholdingExport'
 
 // =====================================================
 // INTERFACES
@@ -143,6 +151,12 @@ export async function createCustomerQuick(input: {
 
   const legal_name = input.legal_name?.trim() || null
 
+  let is_iva_withholding_agent = false
+  if (!isConsumidorFinalNit(tax_id_nit)) {
+    const agentLookup = await lookupWithholdingAgent(supabase, tax_id_nit)
+    is_iva_withholding_agent = agentLookup.isAgent
+  }
+
   const { data, error } = await supabase
     .from('crm_entities')
     .insert({
@@ -156,6 +170,7 @@ export async function createCustomerQuick(input: {
       city: 'Guatemala',
       country: 'Guatemala',
       is_active: true,
+      is_iva_withholding_agent,
     })
     .select(customerSelect)
     .single()
@@ -335,16 +350,43 @@ export async function lookupReplacementAssetForExchange(serial: string) {
   return { data: mapAssetForSale(data as Record<string, unknown>), error: null }
 }
 
-export async function searchAssetsForSale(query: string) {
-  const supabase = await createClient()
-  const q = query.trim()
+export type AssetSaleSearchFilters = {
+  query?: string
+  manufacturer?: string
+  model?: string
+}
 
-  // Exact serial first (scanner / paste)
-  if (q.length >= 2) {
-    const { data: exact, error: exactErr } = await supabase
-      .from('assets')
-      .select(ASSET_SALE_SELECT)
-      .eq('status', 'ready_for_sale')
+function sanitizeAssetSearchToken(value: string): string {
+  return value.replace(/[%_,]/g, ' ').trim()
+}
+
+function remarketingAssetsQuery(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  remarketingWarehouseId: string
+) {
+  return supabase
+    .from('assets')
+    .select(ASSET_SALE_SELECT)
+    .eq('current_warehouse_id', remarketingWarehouseId)
+    .eq('status', REMARKETING_READY_STATUS)
+}
+
+export async function searchAssetsForSale(queryOrFilters: string | AssetSaleSearchFilters) {
+  const supabase = await createClient()
+  const { id: remarketingWarehouseId, error: warehouseError } = await getRemarketingWarehouseId(supabase)
+  if (!remarketingWarehouseId) {
+    return { data: [], error: warehouseError ?? 'Bodega Remarketing no encontrada' }
+  }
+
+  const filters: AssetSaleSearchFilters =
+    typeof queryOrFilters === 'string' ? { query: queryOrFilters } : queryOrFilters
+  const q = filters.query?.trim() || ''
+  const manufacturer = sanitizeAssetSearchToken(filters.manufacturer || '')
+  const model = sanitizeAssetSearchToken(filters.model || '')
+
+  // Exact serial first (scanner / paste) — solo texto libre, sin filtros de marca/modelo
+  if (q.length >= 2 && !manufacturer && !model) {
+    const { data: exact, error: exactErr } = await remarketingAssetsQuery(supabase, remarketingWarehouseId)
       .ilike('serial_number', q)
       .limit(5)
 
@@ -353,13 +395,13 @@ export async function searchAssetsForSale(query: string) {
     }
   }
 
-  if (q.length < 2) {
-    const { data, error } = await supabase
-      .from('assets')
-      .select(ASSET_SALE_SELECT)
-      .eq('status', 'ready_for_sale')
+  const hasMarcaModelo = manufacturer.length >= 1 || model.length >= 1
+  const hasQuery = q.length >= 2
+
+  if (!hasQuery && !hasMarcaModelo) {
+    const { data, error } = await remarketingAssetsQuery(supabase, remarketingWarehouseId)
       .order('created_at', { ascending: false })
-      .limit(20)
+      .limit(25)
 
     if (error) {
       return { data: [], error: error.message }
@@ -370,16 +412,22 @@ export async function searchAssetsForSale(query: string) {
     }
   }
 
-  const safe = q.replace(/[%_,]/g, ' ')
-  const { data, error } = await supabase
-    .from('assets')
-    .select(ASSET_SALE_SELECT)
-    .eq('status', 'ready_for_sale')
-    .or(
+  let request = remarketingAssetsQuery(supabase, remarketingWarehouseId)
+
+  if (manufacturer) {
+    request = request.or(`manufacturer.ilike.%${manufacturer}%,model.ilike.%${manufacturer}%`)
+  }
+  if (model) {
+    request = request.ilike('model', `%${model}%`)
+  }
+  if (hasQuery) {
+    const safe = sanitizeAssetSearchToken(q)
+    request = request.or(
       `serial_number.ilike.%${safe}%,internal_tag.ilike.%${safe}%,manufacturer.ilike.%${safe}%,model.ilike.%${safe}%`
     )
-    .order('created_at', { ascending: false })
-    .limit(30)
+  }
+
+  const { data, error } = await request.order('created_at', { ascending: false }).limit(50)
 
   if (error) {
     console.error('Error searching assets:', error)
@@ -390,6 +438,73 @@ export async function searchAssetsForSale(query: string) {
     data: (data || []).map((row) => mapAssetForSale(row as Record<string, unknown>)),
     error: null,
   }
+}
+
+function uniqueSortedLabels(values: string[]): string[] {
+  const seen = new Set<string>()
+  const list: string[] = []
+  for (const value of values) {
+    const raw = value.trim()
+    if (!raw) continue
+    const key = raw.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    list.push(raw)
+  }
+  list.sort((a, b) => a.localeCompare(b, 'es', { sensitivity: 'base' }))
+  return list
+}
+
+/** Marcas distintas en bodega Remarketing (listos para venta). */
+export async function listRemarketingManufacturers() {
+  const supabase = await createClient()
+  const { id: remarketingWarehouseId, error: warehouseError } = await getRemarketingWarehouseId(supabase)
+  if (!remarketingWarehouseId) {
+    return { data: [] as string[], error: warehouseError ?? 'Bodega Remarketing no encontrada' }
+  }
+
+  const { data, error } = await remarketingAssetsQuery(supabase, remarketingWarehouseId)
+    .select('manufacturer')
+    .not('manufacturer', 'is', null)
+    .neq('manufacturer', '')
+    .order('manufacturer')
+    .limit(5000)
+
+  if (error) {
+    return { data: [] as string[], error: error.message }
+  }
+
+  const manufacturers = (data ?? []).map((row) => String((row as { manufacturer: string }).manufacturer))
+  return { data: uniqueSortedLabels(manufacturers), error: null as string | null }
+}
+
+/** Modelos distintos en Remarketing para una marca. */
+export async function listRemarketingModelsByManufacturer(manufacturer: string) {
+  const marca = sanitizeAssetSearchToken(manufacturer)
+  if (!marca) {
+    return { data: [] as string[], error: null as string | null }
+  }
+
+  const supabase = await createClient()
+  const { id: remarketingWarehouseId, error: warehouseError } = await getRemarketingWarehouseId(supabase)
+  if (!remarketingWarehouseId) {
+    return { data: [] as string[], error: warehouseError ?? 'Bodega Remarketing no encontrada' }
+  }
+
+  const { data, error } = await remarketingAssetsQuery(supabase, remarketingWarehouseId)
+    .select('model')
+    .or(`manufacturer.ilike.%${marca}%,model.ilike.%${marca}%`)
+    .not('model', 'is', null)
+    .neq('model', '')
+    .order('model')
+    .limit(5000)
+
+  if (error) {
+    return { data: [] as string[], error: error.message }
+  }
+
+  const models = (data ?? []).map((row) => String((row as { model: string }).model))
+  return { data: uniqueSortedLabels(models), error: null as string | null }
 }
 
 export async function getRemarketingWarehouseStock() {
@@ -495,6 +610,10 @@ interface ProcessSaleData {
   invoiceNumber?: string
   /** Número de factura electrónica SAT (FEL) */
   satInvoiceNumber?: string
+  /** Descuento sobre subtotal sin IVA (excluyente % vs monto fijo) */
+  discountPercent?: number
+  discountAmount?: number
+  discountNote?: string
 }
 
 function buildInternalInvoiceNumber(manual?: string | null): string {
@@ -587,10 +706,17 @@ export async function processSale(data: ProcessSaleData) {
     return { success: false, error: 'Agrega equipos o servicios al carrito' }
   }
 
-  // Calcular total (precios del carrito son base; IVA 12% se guarda en tax_amount)
-  const subtotal = data.cartItems.reduce((sum, item) => sum + item.unitPrice, 0)
-  const taxAmount = Math.round(subtotal * 0.12 * 100) / 100
-  const totalAmount = Math.round((subtotal + taxAmount) * 100) / 100
+  const linesSubtotal = roundMoney(
+    data.cartItems.reduce((sum, item) => sum + item.unitPrice, 0)
+  )
+  const saleTotals = computeQuotationTotalsWithDiscount(linesSubtotal, false, {
+    discount_percent: data.discountPercent,
+    discount_amount: data.discountAmount,
+  })
+  const subtotal = saleTotals.subtotal
+  const taxAmount = saleTotals.tax_amount
+  const totalAmount = saleTotals.total
+  const orderDiscountAmount = saleTotals.discountApplied
   const invoiceNumber = buildInternalInvoiceNumber(data.invoiceNumber)
   const satInvoiceNumber = (data.satInvoiceNumber || '').trim() || null
   const paymentMethod = (data.paymentMethod || 'efectivo').toLowerCase()
@@ -603,7 +729,13 @@ export async function processSale(data: ProcessSaleData) {
       ? `Visacuota: ${installments} cuota${installments === 1 ? '' : 's'}`
       : null
   const customerNotes = data.notes?.trim() || null
-  const internalNotes = [customerNotes, paymentNotes].filter(Boolean).join(' · ') || null
+  const discountNotePart =
+    orderDiscountAmount > 0
+      ? data.discountNote?.trim()
+        ? `Descuento Q${orderDiscountAmount.toFixed(2)}: ${data.discountNote.trim()}`
+        : `Descuento Q${orderDiscountAmount.toFixed(2)}`
+      : null
+  const internalNotes = [customerNotes, paymentNotes, discountNotePart].filter(Boolean).join(' · ') || null
   const assetCartItems = data.cartItems.filter((item) => !!item.assetId)
 
   // Precio de venta en inventario (desde lo facturado en POS)
@@ -643,6 +775,7 @@ export async function processSale(data: ProcessSaleData) {
           invoice_date: new Date().toISOString().slice(0, 10),
           tax_amount: taxAmount,
           subtotal,
+          discount_amount: orderDiscountAmount,
           total_amount: totalAmount,
           payment_method: paymentMethod,
           internal_notes: internalNotes,
@@ -705,6 +838,7 @@ export async function processSale(data: ProcessSaleData) {
         customer_id: data.customerId,
         status: 'confirmed',
         subtotal,
+        discount_amount: orderDiscountAmount,
         tax_amount: taxAmount,
         total_amount: totalAmount,
         warranty_days: data.warrantyDays || 90,
@@ -847,6 +981,107 @@ export async function updateSalesSatInvoice(orderId: string, satInvoiceNumber: s
   revalidatePath('/dashboard/ventas')
   revalidatePath(`/dashboard/ventas/${orderId}`)
   return { success: true, data: { satInvoiceNumber: value } }
+}
+
+/** Nota visible en historial y en el PDF de política de garantía. */
+export async function updateSalesCustomerNotes(orderId: string, customerNotes: string) {
+  const supabase = await createClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) {
+    return { success: false, error: 'Usuario no autenticado' }
+  }
+  if (!orderId) {
+    return { success: false, error: 'Venta no válida' }
+  }
+
+  const value = customerNotes.trim() || null
+  const { error } = await supabase
+    .from('sales_orders')
+    .update({
+      customer_notes: value,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', orderId)
+
+  if (error) {
+    console.error('updateSalesCustomerNotes:', error)
+    return { success: false, error: error.message }
+  }
+
+  revalidatePath('/dashboard/ventas')
+  revalidatePath(`/dashboard/ventas/${orderId}`)
+  return { success: true, data: { customerNotes: value } }
+}
+
+/** Ajuste manual del total (con IVA); requiere motivo en comentario. */
+export async function updateSalesOrderTotal(
+  orderId: string,
+  totalAmount: number,
+  adjustmentComment: string
+) {
+  const supabase = await createClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) {
+    return { success: false, error: 'Usuario no autenticado' }
+  }
+  if (!orderId) {
+    return { success: false, error: 'Venta no válida' }
+  }
+
+  const comment = adjustmentComment.trim()
+  if (comment.length < 3) {
+    return {
+      success: false,
+      error: 'Debes indicar el motivo del ajuste (mínimo 3 caracteres)',
+    }
+  }
+
+  const { data: order, error: fetchError } = await supabase
+    .from('sales_orders')
+    .select('id, status, total_amount, internal_notes')
+    .eq('id', orderId)
+    .single()
+
+  if (fetchError || !order) {
+    return { success: false, error: fetchError?.message || 'Venta no encontrada' }
+  }
+
+  if (order.status === 'cancelled') {
+    return { success: false, error: 'No se puede editar una venta cancelada' }
+  }
+
+  const { base, tax, total } = splitTotalWithIva(totalAmount)
+  const prevTotal = Number(order.total_amount ?? 0)
+  const stamp = new Date().toLocaleString('es-GT')
+  const auditLine = `[${stamp}] Ajuste total Q${prevTotal.toFixed(2)} → Q${total.toFixed(2)}. Motivo: ${comment}`
+  const internalNotes = appendOrderNote(order.internal_notes, auditLine)
+
+  const { error } = await supabase
+    .from('sales_orders')
+    .update({
+      subtotal: base,
+      tax_amount: tax,
+      total_amount: total,
+      internal_notes: internalNotes,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', orderId)
+
+  if (error) {
+    console.error('updateSalesOrderTotal:', error)
+    return { success: false, error: error.message }
+  }
+
+  revalidatePath('/dashboard/ventas')
+  revalidatePath(`/dashboard/ventas/${orderId}`)
+  return {
+    success: true,
+    data: { subtotal: base, tax_amount: tax, total_amount: total, internal_notes: internalNotes },
+  }
 }
 
 // =====================================================
@@ -1636,7 +1871,7 @@ export async function getSalesOrders(options?: {
     .from('sales_orders')
     .select(`
       *,
-      customer:crm_entities(id, commercial_name, tax_id_nit),
+      customer:crm_entities(id, commercial_name, tax_id_nit, is_iva_withholding_agent),
       sales_rep:profiles!sales_orders_sales_rep_id_fkey(id, full_name),
       items:sales_order_items(
         serial_number,
@@ -1679,7 +1914,59 @@ export async function getSalesOrders(options?: {
     return { data: [], error: null }
   }
 
-  const orderIds = rows.map((o) => o.id as string)
+  let withholdingRate: number | null = null
+  try {
+    const { data: settings } = await supabase
+      .from('company_settings')
+      .select('iva_withholding_rate')
+      .limit(1)
+      .maybeSingle()
+    const configured = Number(settings?.iva_withholding_rate)
+    if (Number.isFinite(configured) && configured > 0 && configured <= 1) {
+      withholdingRate = configured
+    }
+  } catch {
+  }
+
+  const catalogAgentNits = new Set<string>()
+  const normKeys = normalizeNitKeysForBatch(
+    rows.map((o) => {
+      const c = o.customer as { tax_id_nit?: string | null } | null
+      return c?.tax_id_nit
+    })
+  )
+  const CHUNK = 400
+  for (let i = 0; i < normKeys.length; i += CHUNK) {
+    const slice = normKeys.slice(i, i + CHUNK)
+    const { data: agents } = await supabase
+      .from('sat_withholding_agents')
+      .select('nit_normalized')
+      .in('nit_normalized', slice)
+      .eq('active', true)
+    for (const row of agents || []) {
+      if (row.nit_normalized) catalogAgentNits.add(String(row.nit_normalized))
+    }
+  }
+
+  const withFiscal = rows.map((order) => {
+    const customer = order.customer as {
+      tax_id_nit?: string | null
+      is_iva_withholding_agent?: boolean | null
+    } | null
+    const nit = customer?.tax_id_nit || ''
+    const norm = normalizeNitForLookup(nit)
+    const fiscal: SaleWithholdingExportFields = computeSaleWithholdingExportFields({
+      customerNit: nit,
+      taxAmount: Number(order.tax_amount || 0),
+      totalAmount: Number(order.total_amount || 0),
+      isAgentFromCustomerFlag: customer?.is_iva_withholding_agent,
+      isAgentFromCatalog: norm ? catalogAgentNits.has(norm) : false,
+      withholdingRate,
+    })
+    return { ...order, fiscal_withholding: fiscal }
+  })
+
+  const orderIds = withFiscal.map((o) => o.id as string)
   let exchangesByOrder: Record<string, SaleExchangeRecord[]> = {}
   try {
     const { data: allEx } = await supabase
@@ -1703,7 +1990,7 @@ export async function getSalesOrders(options?: {
     exchangesByOrder = {}
   }
 
-  const enriched = rows.map((order) => {
+  const enriched = withFiscal.map((order) => {
     const exchanges = exchangesByOrder[order.id as string] || []
     const serialSearchHint = term ? buildSerialSearchHint(term, order, exchanges) : null
     const hasExchange = exchanges.length > 0

@@ -1,3 +1,13 @@
+import {
+  drawHelveticaMultiline,
+  sanitizeTextForHelveticaPdf,
+} from '@/lib/ventas/pdfHelveticaText'
+import {
+  clampWarrantyDays,
+  DEFAULT_WARRANTY_DAYS,
+  formatWarrantyPeriodEs,
+} from '@/lib/ventas/warrantyOptions'
+
 export type WarrantyPrintPayload = {
   customerName: string
   taxId: string
@@ -11,6 +21,8 @@ export type WarrantyPrintPayload = {
   saleDate: string
   deliveryDate: string
   warrantyEnd: string
+  /** Días de cobertura (texto del banner y cálculo de vencimiento) */
+  warrantyDays?: number
   /** Texto de reemplazos por garantía (para PDF) */
   replacementHistory?: string | null
   items: Array<{
@@ -25,7 +37,7 @@ export type WarrantyPrintPayload = {
 }
 
 function splitCommentsForPdf(raw: string): { detail: string; recommendations: string } {
-  const text = raw.trim()
+  const text = sanitizeTextForHelveticaPdf(raw).trim()
   if (!text) return { detail: '', recommendations: '' }
   const marker = /Recomendaciones de uso\s*:/i
   const idx = text.search(marker)
@@ -50,25 +62,36 @@ function formatGrade(grade?: string | null): string {
   return g.startsWith('Grado') ? g : g
 }
 
-/**
- * Descarga PDF: Política de garantía de equipos usados TECHCORPS
- * Diseño denso — una sola hoja carta.
- */
-export async function printWarrantyPolicy(payload: WarrantyPrintPayload): Promise<void> {
-  const { jsPDF } = await import('jspdf')
-  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'letter' })
+type WarrantyDocDrawOptions = {
+  newPage?: boolean
+  headerSubtitle?: string
+  /** Cotización al cliente: no imprimir número de serie del equipo */
+  hideEquipmentSerial?: boolean
+}
+
+/** Dibuja la política de garantía completa sobre un documento jsPDF existente. */
+export function drawWarrantyPolicyOnDocument(
+  doc: import('jspdf').jsPDF,
+  payload: WarrantyPrintPayload,
+  options?: WarrantyDocDrawOptions
+): void {
+  if (options?.newPage) {
+    doc.addPage()
+  }
   const pageW = doc.internal.pageSize.getWidth()
   const marginX = 10
   const contentW = pageW - marginX * 2
   let y = 7
 
   const writeWrapped = (text: string, fontSize = 6.6, leading = 2.55) => {
-    doc.setFont('helvetica', 'normal')
-    doc.setFontSize(fontSize)
     doc.setTextColor(25, 25, 25)
-    const lines = doc.splitTextToSize(text, contentW)
-    doc.text(lines, marginX, y)
-    y += lines.length * leading + 0.8
+    y = drawHelveticaMultiline(doc, text, marginX, y, contentW, {
+      fontSize,
+      lineMm: leading,
+      fontStyle: 'normal',
+      textColor: [25, 25, 25],
+    })
+    y += 0.8
   }
 
   const sectionTitle = (title: string) => {
@@ -76,11 +99,7 @@ export async function printWarrantyPolicy(payload: WarrantyPrintPayload): Promis
     doc.setFontSize(8)
     doc.setTextColor(17, 17, 17)
     doc.text(title, marginX, y)
-    y += 1.2
-    doc.setDrawColor(150, 150, 150)
-    doc.setLineWidth(0.25)
-    doc.line(marginX, y, marginX + contentW, y)
-    y += 3.2
+    y += 4.5
   }
 
   /** Etiqueta + valor compactos en una sola línea de altura fija */
@@ -92,12 +111,9 @@ export async function printWarrantyPolicy(payload: WarrantyPrintPayload): Promis
     doc.setFont('helvetica', 'normal')
     doc.setFontSize(7.5)
     doc.setTextColor(17, 17, 17)
-    const display = (value || '').trim() || '________________'
+    const display = sanitizeTextForHelveticaPdf((value || '').trim()) || '—'
     const lines = doc.splitTextToSize(display, w)
-    doc.text(lines[0], x, y + 3.2)
-    doc.setDrawColor(60, 60, 60)
-    doc.setLineWidth(0.2)
-    doc.line(x, y + 4.2, x + w, y + 4.2)
+    doc.text(lines[0] ?? '—', x, y + 3.2)
   }
 
   // —— Encabezado compacto ——
@@ -106,10 +122,14 @@ export async function printWarrantyPolicy(payload: WarrantyPrintPayload): Promis
   doc.setTextColor(255, 255, 255)
   doc.setFont('helvetica', 'bold')
   doc.setFontSize(9.5)
-  doc.text('TECHCORPS GUATEMALA', marginX, 5)
+  doc.text('Techcorp Guatemala', marginX, 5)
   doc.setFont('helvetica', 'normal')
   doc.setFontSize(7)
-  doc.text('Política de Garantía de equipos usados  ·  1 hoja', marginX, 9)
+  doc.text(
+    options?.headerSubtitle ?? 'Política de Garantía de equipos usados  ·  1 hoja',
+    marginX,
+    9
+  )
   if (payload.policyNumber) {
     doc.setFont('helvetica', 'bold')
     doc.setFontSize(7)
@@ -122,8 +142,10 @@ export async function printWarrantyPolicy(payload: WarrantyPrintPayload): Promis
   doc.setTextColor(30, 58, 95)
   doc.setFont('helvetica', 'bold')
   doc.setFontSize(6.5)
+  const warrantyDays = clampWarrantyDays(payload.warrantyDays ?? DEFAULT_WARRANTY_DAYS)
+  const periodLabel = formatWarrantyPeriodEs(warrantyDays)
   doc.text(
-    'Garantía de 3 meses en piezas, servicios de reparación y accesorios  |  Equipo grado B',
+    `Garantía de ${periodLabel} en piezas, servicios de reparación y accesorios  |  Equipo grado B`,
     marginX + 1.5,
     y + 1.8
   )
@@ -163,16 +185,23 @@ export async function printWarrantyPolicy(payload: WarrantyPrintPayload): Promis
     doc.setFontSize(7)
     doc.setTextColor(17, 17, 17)
     const line1 = doc.splitTextToSize(
-      `Marca: ${item.manufacturer || '—'}   ·   Modelo: ${modelLine || '—'}`,
+      sanitizeTextForHelveticaPdf(
+        `Marca: ${item.manufacturer || '—'}   ·   Modelo: ${modelLine || '—'}`
+      ),
       contentW
     )
-    doc.text(line1[0], marginX, y)
+    doc.text(line1[0] ?? '', marginX, y)
     y += 3.2
     doc.setFont('helvetica', 'normal')
     doc.setFontSize(7)
-    doc.text(`Serie: ${sn}`, marginX, y)
-    doc.text(`Condición estética: ${grade}`, marginX + contentW / 2, y)
-    y += 4
+    if (options?.hideEquipmentSerial) {
+      doc.text(`Condición estética: ${grade}`, marginX, y)
+      y += 4
+    } else {
+      doc.text(`Serie: ${sn}`, marginX, y)
+      doc.text(`Condición estética: ${grade}`, marginX + contentW / 2, y)
+      y += 4
+    }
   }
   if (payload.items.length > 2) {
     doc.setFont('helvetica', 'italic')
@@ -203,9 +232,8 @@ export async function printWarrantyPolicy(payload: WarrantyPrintPayload): Promis
   }
   y += 5.5
 
-  const { detail: commentDetail, recommendations } = splitCommentsForPdf(
-    payload.commentsDetail || ''
-  )
+  const commentsRaw = sanitizeTextForHelveticaPdf(payload.commentsDetail || '')
+  const { detail: commentDetail, recommendations } = splitCommentsForPdf(commentsRaw)
 
   const printCommentBlock = (title: string, body: string, blankLinesIfEmpty = 2) => {
     doc.setFont('helvetica', 'bold')
@@ -213,21 +241,18 @@ export async function printWarrantyPolicy(payload: WarrantyPrintPayload): Promis
     doc.setTextColor(17, 17, 17)
     doc.text(title, marginX, y)
     y += 3.2
-    const text = body.trim()
+    const text = sanitizeTextForHelveticaPdf(body)
     if (text) {
-      doc.setFont('helvetica', 'normal')
-      doc.setFontSize(6.5)
       doc.setTextColor(25, 25, 25)
-      const lines = doc.splitTextToSize(text, contentW)
-      doc.text(lines, marginX, y)
-      y += lines.length * 2.35 + 1.2
-    } else {
-      doc.setDrawColor(40, 40, 40)
-      doc.setLineWidth(0.25)
-      for (let i = 0; i < blankLinesIfEmpty; i++) {
-        doc.line(marginX, y + 0.3, marginX + contentW, y + 0.3)
-        y += 4
-      }
+      y = drawHelveticaMultiline(doc, text, marginX, y, contentW, {
+        fontSize: 6.5,
+        lineMm: 2.45,
+        fontStyle: 'normal',
+        textColor: [25, 25, 25],
+      })
+      y += 1.2
+    } else if (blankLinesIfEmpty > 0) {
+      y += blankLinesIfEmpty * 3.5
     }
   }
 
@@ -237,12 +262,13 @@ export async function printWarrantyPolicy(payload: WarrantyPrintPayload): Promis
   doc.setFont('helvetica', 'bold')
   doc.setFontSize(6.5)
   doc.text('Estado de batería externa y observaciones', marginX, y)
-  doc.setDrawColor(40, 40, 40)
-  doc.setLineWidth(0.25)
-  doc.line(marginX + 56, y + 0.3, marginX + contentW, y + 0.3)
   y += 5.5
 
   // —— Cláusulas ——
+  const periodCalendar =
+    warrantyDays % 30 === 0 && warrantyDays >= 30
+      ? `${warrantyDays / 30} meses calendario`
+      : `${warrantyDays} días calendario`
   const clause = (title: string, body: string) => {
     doc.setFont('helvetica', 'bold')
     doc.setFontSize(7)
@@ -255,11 +281,11 @@ export async function printWarrantyPolicy(payload: WarrantyPrintPayload): Promis
 
   clause(
     '1. Cobertura y condición del equipo',
-    'TECHCORPS otorga 3 meses calendario de garantía desde la entrega, con cobertura de piezas y servicios de reparación, incluida mano de obra, por fallas de funcionamiento bajo uso normal. Incluye diagnóstico y reparación o sustitución de componentes cubiertos sin costo: placa principal, procesador, RAM, SSD, pantalla, teclado, panel táctil, puertos y conectividad integrados. El grado B admite signos normales de uso informados al entregar, sin afectar la funcionalidad; estos detalles estéticos no constituyen una falla cubierta.'
+    `TECHCORPS otorga ${periodCalendar} de garantía desde la entrega, con cobertura de piezas y servicios de reparación, incluida mano de obra, por fallas de funcionamiento bajo uso normal. Incluye diagnóstico y reparación o sustitución de componentes cubiertos sin costo: placa principal, procesador, RAM, SSD, pantalla, teclado, panel táctil, puertos y conectividad integrados. El grado B admite signos normales de uso informados al entregar, sin afectar la funcionalidad; estos detalles estéticos no constituyen una falla cubierta.`
   )
   clause(
     '2. Accesorios y batería',
-    'El cargador entregado con el equipo y la batería externa cuentan con 3 meses calendario de garantía desde la entrega, por fallas de funcionamiento bajo uso normal. La batería interna no está cubierta por esta garantía comercial. El desgaste natural y la reducción de autonomía por uso no están cubiertos. Ante una falla del cargador o de la batería externa, deben ingresar al Centro de Servicios para diagnóstico y reparación o sustitución, según el resultado técnico.'
+    `El cargador entregado con el equipo y la batería externa cuentan con ${periodCalendar} de garantía desde la entrega, por fallas de funcionamiento bajo uso normal. La batería interna no está cubierta por esta garantía comercial. El desgaste natural y la reducción de autonomía por uso no están cubiertos. Ante una falla del cargador o de la batería externa, deben ingresar al Centro de Servicios para diagnóstico y reparación o sustitución, según el resultado técnico.`
   )
   clause(
     '3. Exclusiones',
@@ -289,7 +315,7 @@ export async function printWarrantyPolicy(payload: WarrantyPrintPayload): Promis
   doc.setFont('helvetica', 'normal')
   doc.setFontSize(6.5)
   doc.text('Firma del cliente', marginX, y + 3.5)
-  doc.text('Firma y sello TECHCORPS', marginX + sigW + 10, y + 3.5)
+  doc.text('Firma y sello Techcorp', marginX + sigW + 10, y + 3.5)
   y += 7
   doc.setFontSize(5.8)
   doc.setTextColor(70, 70, 70)
@@ -299,6 +325,30 @@ export async function printWarrantyPolicy(payload: WarrantyPrintPayload): Promis
     y
   )
 
+}
+
+/**
+ * Segunda página en PDF de cotización (misma política que venta).
+ */
+export function appendWarrantyPolicyPageToDocument(
+  doc: import('jspdf').jsPDF,
+  payload: WarrantyPrintPayload
+): void {
+  drawWarrantyPolicyOnDocument(doc, payload, {
+    newPage: true,
+    headerSubtitle: 'Política de Garantía de equipos usados — anexo a cotización',
+    hideEquipmentSerial: true,
+  })
+}
+
+/**
+ * Descarga PDF: Política de garantía de equipos usados TECHCORPS
+ * Diseño denso — una sola hoja carta.
+ */
+export async function printWarrantyPolicy(payload: WarrantyPrintPayload): Promise<void> {
+  const { jsPDF } = await import('jspdf')
+  const doc = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'letter' })
+  drawWarrantyPolicyOnDocument(doc, payload)
   const safeName = (payload.customerName || 'cliente')
     .replace(/[^\w\-]+/g, '_')
     .slice(0, 40)
@@ -338,6 +388,7 @@ type SaleOrderForWarranty = {
     product_description?: string | null
     serial_number?: string | null
     condition_grade?: string | null
+    warranty_days?: number | null
     warranty_end_date?: string | null
     asset?: {
       manufacturer?: string | null
@@ -385,9 +436,13 @@ export function buildWarrantyPayloadFromSaleOrder(
   const customer = order.customer
   const items = order.items || []
   const soldAt = new Date(order.created_at)
+  const itemWarrantyDays = items[0]?.warranty_days
+  const warrantyDays = clampWarrantyDays(
+    itemWarrantyDays != null ? Number(itemWarrantyDays) : DEFAULT_WARRANTY_DAYS
+  )
   const warrantyEnd = items[0]?.warranty_end_date
     ? new Date(items[0].warranty_end_date)
-    : new Date(soldAt.getTime() + 90 * 86400000)
+    : new Date(soldAt.getTime() + warrantyDays * 86400000)
 
   return {
     customerName: customer?.commercial_name || '—',
@@ -399,6 +454,7 @@ export function buildWarrantyPayloadFromSaleOrder(
     saleDate: soldAt.toLocaleDateString('es-GT'),
     deliveryDate: soldAt.toLocaleDateString('es-GT'),
     warrantyEnd: warrantyEnd.toLocaleDateString('es-GT'),
+    warrantyDays,
     items: items.map((item) => ({
       manufacturer: item.asset?.manufacturer || '—',
       model: item.asset?.model || item.product_description || '—',
@@ -407,7 +463,7 @@ export function buildWarrantyPayloadFromSaleOrder(
       grade: item.condition_grade || item.asset?.condition_grade || item.asset?.condition || 'Grade B',
       specs: formatAssetSpecsLine(item.asset?.specifications) || item.product_description || '',
     })),
-    commentsDetail: warrantyCommentsFromOrder(order),
+    commentsDetail: sanitizeTextForHelveticaPdf(warrantyCommentsFromOrder(order)),
     policyNumber: options?.policyNumber ?? null,
     replacementHistory: options?.exchanges?.length
       ? formatReplacementHistory(options.exchanges)

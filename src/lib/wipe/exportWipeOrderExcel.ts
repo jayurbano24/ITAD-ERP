@@ -99,10 +99,13 @@ function kgToLbs(kg: string | null | undefined): string {
 /** LAP / laptop → Laptop (columna Device de la plantilla) */
 export function mapDeviceLabel(
   prefix: string | null | undefined,
-  assetType?: string | null
+  assetType?: string | null,
+  make?: string | null,
+  model?: string | null
 ): string {
-  const src = `${prefix || ''} ${assetType || ''}`.toLowerCase()
-  if (/lap|notebook|elitebook|latitude|thinkpad|macbook/.test(src)) return 'Laptop'
+  const mm = `${make || ''} ${model || ''}`.toLowerCase()
+  const src = `${prefix || ''} ${assetType || ''} ${mm}`.toLowerCase()
+  if (/lap|notebook|elitebook|latitude|thinkpad|macbook|inspiron/.test(src)) return 'Laptop'
   if (/des|desktop|tower|optiplex/.test(src)) return 'Desktop'
   if (/srv|server|poweredge|proliant/.test(src)) return 'Server'
   if (/tab|tablet|ipad/.test(src)) return 'Tablet'
@@ -112,7 +115,9 @@ export function mapDeviceLabel(
   if (p === 'DES') return 'Desktop'
   if (p === 'SRV') return 'Server'
   if (p === 'TAB') return 'Tablet'
-  return prefix || assetType || ''
+  const typeNorm = (assetType || '').trim().toLowerCase()
+  if (typeNorm === 'equipo' || typeNorm === 'laptop') return 'Laptop'
+  return prefix || (typeNorm === 'equipo' ? 'Laptop' : assetType) || 'Laptop'
 }
 
 export function mapFinalStatus(status: string | null | undefined): string {
@@ -178,7 +183,8 @@ export function displayBattery(battery: string | null | undefined): string {
 
 export function displayCharger(charger: string | null | undefined): string {
   const ch = v(charger).trim()
-  if (!ch || /^no$/i.test(ch)) return 'NO'
+  if (!ch) return ''
+  if (/^no$/i.test(ch)) return 'NO'
   if (/^yes$/i.test(ch)) return 'YES'
   return ch
 }
@@ -275,7 +281,7 @@ export function buildAssetReportBaseName(
 function mapRow(r: WipeExcelRow, pdfZipPath: string): (string | number)[] {
   const weightLbs = v(r.weightLbs) || kgToLbs(r.weightKg) || ''
   const testDate = formatTestDateExcel(r.testDate || r.processedTime)
-  const device = v(r.device) || mapDeviceLabel(r.prefix)
+  const device = v(r.device) || mapDeviceLabel(r.prefix, null, r.make, r.model)
   const ram = v(r.ramCapacityGb)
     ? /gb/i.test(v(r.ramCapacityGb))
       ? v(r.ramCapacityGb)

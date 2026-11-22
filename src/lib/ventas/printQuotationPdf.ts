@@ -3,6 +3,18 @@ import { TECHCORPS_HEADER_CONTACT_LINES, TECHCORPS_LETTERHEAD } from '@/lib/vent
 import { formatQuotationPaymentMethod } from '@/lib/ventas/quotationMeta'
 import { formatQuotationStatus } from '@/lib/ventas/quotationStatus'
 import { QUOTATION_IVA_RATE } from '@/lib/ventas/quotationIva'
+import type { WarrantyPrintPayload } from '@/lib/ventas/printWarrantyPolicy'
+import { appendWarrantyPolicyPageToDocument } from '@/lib/ventas/printWarrantyPolicy'
+import {
+  drawHelveticaMultiline,
+  sanitizeTextForHelveticaPdf,
+} from '@/lib/ventas/pdfHelveticaText'
+import { resolveCode128BarcodeDataUrl } from '@/lib/ventas/code128Barcode'
+import {
+  clampWarrantyDays,
+  DEFAULT_WARRANTY_DAYS,
+  warrantyEndLabelFromBase,
+} from '@/lib/ventas/warrantyOptions'
 
 /** RGB corporativo (azul TECHCORPS) */
 const BRAND = { r: 26, g: 45, b: 105 } as const
@@ -11,6 +23,58 @@ const MUTED = { r: 75, g: 85, b: 99 } as const
 import type { QuotationIvaTotals, QuotationTotalsView } from '@/lib/ventas/quotationIva'
 
 export type { QuotationIvaTotals }
+
+function quotationPdfDashValue(value: string): string {
+  const v = value.trim()
+  return v === '—' || !v ? '' : v
+}
+
+export function formatQuotationItemGrade(condition?: string | null): string {
+  if (!condition?.trim()) return '—'
+  const g = condition.trim()
+  if (/^grade\s*a$/i.test(g) || g === 'A') return 'Grado A'
+  if (/^grade\s*b$/i.test(g) || g === 'B') return 'Grado B'
+  if (/^grade\s*c$/i.test(g) || g === 'C') return 'Grado C'
+  if (/scrap|grade\s*d/i.test(g)) return 'Grado D / Scrap'
+  if (/^grado\b/i.test(g)) return g
+  const m = g.match(/\bgrade\s*([a-d])\b/i)
+  if (m) return `Grado ${m[1].toUpperCase()}`
+  return g
+}
+
+function buildWarrantyPayloadFromQuotation(payload: QuotationPrintPayload): WarrantyPrintPayload {
+  const quoteDate = payload.createdAt || new Date().toLocaleDateString('es-GT')
+  const saleDay = quoteDate.includes(',') ? quoteDate.split(',')[0].trim() : quoteDate
+  const warrantyDays = clampWarrantyDays(payload.warrantyDays ?? DEFAULT_WARRANTY_DAYS)
+  const base = new Date()
+  const parsed = Date.parse(saleDay)
+  if (Number.isFinite(parsed)) {
+    base.setTime(parsed)
+  }
+
+  return {
+    customerName: payload.customerName,
+    taxId: quotationPdfDashValue(payload.nit) || 'CF',
+    phone: quotationPdfDashValue(payload.phone) || null,
+    email: quotationPdfDashValue(payload.email) || null,
+    policyNumber: payload.quoteNumber,
+    saleDate: saleDay,
+    deliveryDate: 'Al aceptar cotización',
+    warrantyEnd: warrantyEndLabelFromBase(base, warrantyDays),
+    warrantyDays,
+    items: payload.items.map((item) => ({
+      manufacturer: item.manufacturer,
+      model: item.model,
+      serialNumber: '__________',
+      grade: item.grade,
+    })),
+    commentsDetail: payload.notes
+      ? sanitizeTextForHelveticaPdf(
+          formatQuotationPlainTextForPdf(payload.notes).replace(/^- /gm, '')
+        )
+      : null,
+  }
+}
 
 function solicitanteLabel(row: SalesQuotation): string {
   if (row.solicitante_tipo === 'empresa') {
@@ -63,11 +127,11 @@ export function buildQuotationPrintPayload(
     discountApplied: iva.discountApplied,
     discountNote: quotation.discount_note,
     notes: quotation.description,
+    warrantyDays: clampWarrantyDays(quotation.warranty_days ?? DEFAULT_WARRANTY_DAYS),
     items: (quotation.items ?? []).map((item) => ({
-      description: item.description,
-      serial: item.serial_number || '—',
-      brandModel: [item.manufacturer, item.model].filter(Boolean).join(' · ') || '—',
-      condition: item.condition?.trim() || '',
+      manufacturer: item.manufacturer?.trim() || '—',
+      model: item.model?.trim() || '—',
+      grade: formatQuotationItemGrade(item.condition),
       qty: item.quantity,
       unitPrice: item.unit_price,
       lineTotal: item.line_total,
@@ -96,11 +160,11 @@ export type QuotationPrintPayload = {
   discountApplied: number
   discountNote?: string | null
   notes?: string | null
+  warrantyDays?: number
   items: Array<{
-    description: string
-    serial: string
-    brandModel: string
-    condition: string
+    manufacturer: string
+    model: string
+    grade: string
     qty: number
     unitPrice: number
     lineTotal: number
@@ -111,11 +175,36 @@ function formatQ(amount: number): string {
   return new Intl.NumberFormat('es-GT', { style: 'currency', currency: 'GTQ' }).format(amount)
 }
 
-const PDF_FOOT_FILL = [249, 250, 251] as const
+/** Texto de una celda (sin forzar viñetas por línea). */
+function formatQuotationPlainTextForPdf(input: string): string {
+  return sanitizeTextForHelveticaPdf(input)
+}
+
+/** Notas multilínea: viñeta ASCII compatible con Helvetica. */
+export function formatQuotationNotesForPdf(input: string): string {
+  return formatQuotationPlainTextForPdf(input)
+    .split('\n')
+    .map((line) => {
+      const t = line.trim()
+      if (!t) return ''
+      if (/^[-–—]\s/.test(t)) return t.replace(/^–|—/, '-')
+      return `- ${t}`
+    })
+    .filter(Boolean)
+    .join('\n')
+}
+
+export function formatQuotationNotesForDisplay(input: string): string {
+  return formatQuotationNotesForPdf(input).replace(/^- /gm, '• ')
+}
+
+const PDF_FOOT_FILL = [255, 255, 255] as const
 
 type PdfFootCell = string | { content: string; colSpan?: number; styles?: Record<string, unknown> }
 
-/** Pie de tabla: 4 cols vacías + etiqueta (Precio) + monto (Subtotal), alineado al cuerpo. */
+/** Pie de tabla: (N−2) cols vacías + etiqueta + monto en las dos últimas columnas. */
+const QUOTATION_TABLE_COLS = 6
+
 function pdfFootAmountRow(
   label: string,
   amount: string,
@@ -124,8 +213,8 @@ function pdfFootAmountRow(
   return [
     {
       content: '',
-      colSpan: 4,
-      styles: { fillColor: PDF_FOOT_FILL, minCellHeight: 6, valign: 'middle' },
+      colSpan: QUOTATION_TABLE_COLS - 2,
+      styles: { fillColor: PDF_FOOT_FILL, minCellHeight: 8, valign: 'middle' },
     },
     {
       content: label,
@@ -213,7 +302,7 @@ function drawPdfFooter(doc: import('jspdf').jsPDF, marginX: number, pageW: numbe
   doc.setFontSize(7)
   doc.setTextColor(MUTED.r, MUTED.g, MUTED.b)
   doc.text(
-    `${TECHCORPS_LETTERHEAD.legalName} · ${TECHCORPS_LETTERHEAD.phonesDisplay} · ${TECHCORPS_LETTERHEAD.email}`,
+    `${TECHCORPS_LETTERHEAD.legalName} · ${TECHCORPS_LETTERHEAD.phonesDisplay} · ${TECHCORPS_LETTERHEAD.websiteDisplay}`,
     pageW / 2,
     y,
     { align: 'center' }
@@ -224,9 +313,14 @@ async function buildWatermarkDataUrl(logo: LogoAsset): Promise<string> {
   return await new Promise((resolve) => {
     const img = new Image()
     img.onload = () => {
+      const padRatio = 0.14
+      const w = img.naturalWidth
+      const h = img.naturalHeight
+      const padX = Math.round(w * padRatio)
+      const padY = Math.round(h * padRatio)
       const canvas = document.createElement('canvas')
-      canvas.width = img.naturalWidth
-      canvas.height = img.naturalHeight
+      canvas.width = w + padX * 2
+      canvas.height = h + padY * 2
       const ctx = canvas.getContext('2d')
       if (!ctx) {
         resolve(logo.dataUrl)
@@ -234,7 +328,7 @@ async function buildWatermarkDataUrl(logo: LogoAsset): Promise<string> {
       }
       ctx.clearRect(0, 0, canvas.width, canvas.height)
       ctx.globalAlpha = 0.045
-      ctx.drawImage(img, 0, 0)
+      ctx.drawImage(img, padX, padY, w, h)
       resolve(canvas.toDataURL('image/png'))
     }
     img.onerror = () => resolve(logo.dataUrl)
@@ -246,16 +340,43 @@ async function drawWatermark(doc: import('jspdf').jsPDF, logo: LogoAsset | null)
   if (!logo) return
   const pageW = doc.internal.pageSize.getWidth()
   const pageH = doc.internal.pageSize.getHeight()
-  const wmH = 34
-  const wmW = wmH * logo.aspect
+  const margin = 16
+  const footerReserve = 14
+  const maxW = pageW - margin * 2
+  const maxH = pageH - margin * 2 - footerReserve
+  const paddedAspect = logo.aspect * (1 + 0.14 * 2)
+  let wmH = Math.min(maxH * 0.52, 40)
+  let wmW = wmH * paddedAspect
+  if (wmW > maxW * 0.88) {
+    wmW = maxW * 0.88
+    wmH = wmW / paddedAspect
+  }
   const faint = await buildWatermarkDataUrl(logo)
-  doc.addImage(faint, 'PNG', (pageW - wmW) / 2, (pageH - wmH) / 2, wmW, wmH, undefined, 'FAST')
+  const wmX = (pageW - wmW) / 2
+  const wmY = Math.max(margin, (pageH - wmH) / 2 - 4)
+  doc.addImage(faint, 'PNG', wmX, wmY, wmW, wmH, undefined, 'FAST')
 }
 
-const PDF_INFO_FONT = 7
-const PDF_INFO_LINE = 3.25
+const PDF_INFO_FONT = 8
+const PDF_INFO_LINE = 3.55
+const PDF_INFO_TITLE_FONT = 8.5
+const PDF_INFO_LABEL_W_RATIO = 0.4
 
-function labeledLine(
+function infoRowMeasureHeight(
+  doc: import('jspdf').jsPDF,
+  value: string,
+  w: number
+): number {
+  const labelW = w * PDF_INFO_LABEL_W_RATIO
+  const valueW = Math.max(20, w - labelW - 2)
+  doc.setFont('helvetica', 'bold')
+  doc.setFontSize(PDF_INFO_FONT)
+  const lines = doc.splitTextToSize((value || '—').trim() || '—', valueW)
+  return Math.max(1, lines.length) * PDF_INFO_LINE + 0.85
+}
+
+/** Etiqueta a la izquierda, valor alineado a la derecha (como en pantalla). */
+function infoRowTwoColumn(
   doc: import('jspdf').jsPDF,
   label: string,
   value: string,
@@ -264,25 +385,24 @@ function labeledLine(
   w: number
 ): number {
   const text = (value || '—').trim() || '—'
-  doc.setFont('helvetica', 'bold')
-  doc.setFontSize(PDF_INFO_FONT)
-  doc.setTextColor(30, 30, 30)
-  const prefix = `${label}: `
-  const prefixW = doc.getTextWidth(prefix)
-  doc.text(prefix, x, y)
+  const labelW = w * PDF_INFO_LABEL_W_RATIO
+  const valueW = Math.max(20, w - labelW - 2)
+  const rightX = x + w
+
   doc.setFont('helvetica', 'normal')
-  const lines = doc.splitTextToSize(text, Math.max(16, w - prefixW))
-  if (lines.length === 1) {
-    doc.text(lines[0], x + prefixW, y)
-    return y + PDF_INFO_LINE + 0.5
+  doc.setFontSize(PDF_INFO_FONT)
+  doc.setTextColor(MUTED.r, MUTED.g, MUTED.b)
+  doc.text(label, x, y)
+
+  doc.setFont('helvetica', 'bold')
+  doc.setTextColor(22, 22, 22)
+  const lines = doc.splitTextToSize(text, valueW) as string[]
+  let cy = y
+  for (const line of lines) {
+    doc.text(line, rightX, cy, { align: 'right' })
+    cy += PDF_INFO_LINE
   }
-  doc.text(lines[0], x + prefixW, y)
-  let ly = y + PDF_INFO_LINE
-  for (let i = 1; i < lines.length; i++) {
-    ly += PDF_INFO_LINE
-    doc.text(lines[i], x + prefixW, ly)
-  }
-  return ly + 1
+  return y + Math.max(1, lines.length) * PDF_INFO_LINE + 0.85
 }
 
 /** Misma estructura que la vista en pantalla / captura de referencia */
@@ -317,37 +437,72 @@ export async function renderQuotationPdfDocument(
   doc.setTextColor(MUTED.r, MUTED.g, MUTED.b)
   const contactW = contentW - (logoW + 4)
   let contactY = y + 8.5
-  for (const line of TECHCORPS_HEADER_CONTACT_LINES) {
+  TECHCORPS_HEADER_CONTACT_LINES.forEach((line, index) => {
+    if (index === 2) {
+      doc.setTextColor(BRAND.r, BRAND.g, BRAND.b)
+      doc.textWithLink(line, headTextX, contactY, { url: TECHCORPS_LETTERHEAD.websiteUrl })
+      doc.setTextColor(MUTED.r, MUTED.g, MUTED.b)
+      contactY += 3.2
+      return
+    }
     const wrapped = doc.splitTextToSize(line, contactW)
     doc.text(wrapped, headTextX, contactY)
     contactY += wrapped.length * 3.2 + 0.8
-  }
+  })
 
   y = Math.max(y + (logo ? 16 : 10), contactY + 2)
   doc.setDrawColor(200, 200, 200)
   doc.line(marginX, y, marginX + contentW, y)
-  y += 6
+  y += 5
 
+  const sectionTop = y
+  const barcodeDataUrl = await resolveCode128BarcodeDataUrl(payload.quoteNumber, {
+    scale: 3,
+    height: 8,
+    includetext: false,
+  })
+
+  const barW = 48
+  const barH = 9
+  const barX = pageW - marginX - barW
+  const pad = 2
+  const barcodeBlockH = barH + pad * 2 + 9
+
+  if (barcodeDataUrl) {
+    doc.setFillColor(252, 252, 253)
+    doc.setDrawColor(220, 225, 232)
+    doc.roundedRect(barX - pad, sectionTop, barW + pad * 2, barcodeBlockH, 1.2, 1.2, 'FD')
+    doc.addImage(barcodeDataUrl, 'PNG', barX, sectionTop + pad, barW, barH, undefined, 'FAST')
+    doc.setFont('helvetica', 'bold')
+    doc.setFontSize(9)
+    doc.setTextColor(BRAND.r, BRAND.g, BRAND.b)
+    doc.text(payload.quoteNumber, barX + barW / 2, sectionTop + pad + barH + 4.2, {
+      align: 'center',
+    })
+  }
+
+  const titleY = sectionTop + 6
   doc.setFont('helvetica', 'bold')
-  doc.setFontSize(11)
+  doc.setFontSize(12)
   doc.setTextColor(17, 17, 17)
-  doc.text(payload.title, marginX, y)
-  doc.setFont('helvetica', 'bold')
-  doc.setFontSize(10)
-  doc.setTextColor(BRAND.r, BRAND.g, BRAND.b)
-  doc.text(payload.quoteNumber, pageW - marginX, y, { align: 'right' })
+  doc.text('COTIZACIÓN', marginX, titleY)
+
   doc.setFont('helvetica', 'normal')
   doc.setFontSize(8)
   doc.setTextColor(MUTED.r, MUTED.g, MUTED.b)
-  doc.text(formatQuotationStatus(payload.status), pageW - marginX, y + 4.5, { align: 'right' })
-  y += 11
+  const statusY = sectionTop + barcodeBlockH + 2.5
+  doc.text(formatQuotationStatus(payload.status), pageW - marginX, statusY, { align: 'right' })
 
-  const gap = 3
+  y = Math.max(titleY + 10, statusY + 5)
+
+  const gap = 4
   const colW = (contentW - gap) / 2
   const blockTop = y
-  const innerPad = 2.5
-  const titleH = 5
-  const blockPadBottom = 2
+  const innerPad = 4
+  const titleH = 8
+  const blockPadBottom = 3.5
+  const cardRadius = 2.8
+  const cardHeaderGap = 3.5
 
   const clientLines = [
     ['Nombre', payload.customerName],
@@ -363,46 +518,62 @@ export async function renderQuotationPdfDocument(
     ['Pago', formatQuotationPaymentMethod(payload.paymentMethod)],
   ] as const
 
-  doc.setFont('helvetica', 'normal')
-  doc.setFontSize(PDF_INFO_FONT)
+  const innerW = colW - innerPad * 2
   const measureCol = (lines: readonly (readonly [string, string])[]) => {
     let contentH = 0
-    for (const [label, value] of lines) {
-      doc.setFont('helvetica', 'bold')
-      const prefixW = doc.getTextWidth(`${label}: `)
-      doc.setFont('helvetica', 'normal')
-      const wrapped = doc.splitTextToSize((value || '—').trim() || '—', Math.max(16, colW - innerPad * 2 - prefixW))
-      contentH += Math.max(1, wrapped.length) * PDF_INFO_LINE + 0.5
+    for (const [, value] of lines) {
+      contentH += infoRowMeasureHeight(doc, value, innerW)
     }
-    return titleH + contentH + blockPadBottom
+    return titleH + cardHeaderGap + contentH + blockPadBottom
   }
-  const clientBlockH = measureCol(clientLines)
-  const opBlockH = measureCol(opLines)
+  const blockH = Math.max(measureCol(clientLines), measureCol(opLines))
+  const cardContentTop = blockTop + titleH + cardHeaderGap
 
-  const drawGreyBlock = (x: number, title: string, blockH: number) => {
+  const paintInfoCardHeader = (x: number) => {
+    const headerFillH = titleH + cardRadius * 0.55
     doc.setFillColor(248, 249, 251)
-    doc.setDrawColor(220, 224, 230)
-    doc.roundedRect(x, blockTop, colW, blockH, 1.5, 1.5, 'FD')
+    doc.setDrawColor(248, 249, 251)
+    doc.roundedRect(x, blockTop, colW, headerFillH, cardRadius, cardRadius, 'F')
+    doc.setFillColor(255, 255, 255)
+    doc.rect(x + 0.2, blockTop + titleH, colW - 0.4, cardRadius * 0.55 + 0.25, 'F')
+  }
+
+  const drawInfoCardTitle = (x: number, title: string) => {
     doc.setFont('helvetica', 'bold')
-    doc.setFontSize(6.5)
-    doc.setTextColor(MUTED.r, MUTED.g, MUTED.b)
-    doc.text(title.toUpperCase(), x + innerPad, blockTop + 3.8)
+    doc.setFontSize(PDF_INFO_TITLE_FONT)
+    doc.setTextColor(BRAND.r, BRAND.g, BRAND.b)
+    doc.text(title.toUpperCase(), x + innerPad, blockTop + 5.2)
+    const sepY = blockTop + titleH + 0.55
+    doc.setDrawColor(220, 226, 234)
+    doc.setLineWidth(0.12)
+    doc.line(x + innerPad, sepY, x + colW - innerPad, sepY)
   }
 
-  drawGreyBlock(marginX, 'Cliente', clientBlockH)
-  drawGreyBlock(marginX + colW + gap, 'Operación', opBlockH)
+  const strokeInfoCardOutline = (x: number) => {
+    doc.setDrawColor(208, 214, 224)
+    doc.setLineWidth(0.22)
+    doc.roundedRect(x, blockTop, colW, blockH, cardRadius, cardRadius, 'S')
+  }
 
-  let cy = blockTop + titleH + 1
+  paintInfoCardHeader(marginX)
+  paintInfoCardHeader(marginX + colW + gap)
+  drawInfoCardTitle(marginX, 'Cliente')
+  drawInfoCardTitle(marginX + colW + gap, 'Operación')
+
+  let cy = cardContentTop
   for (const [label, value] of clientLines) {
-    cy = labeledLine(doc, label, value, marginX + innerPad, cy, colW - innerPad * 2)
+    cy = infoRowTwoColumn(doc, label, value, marginX + innerPad, cy, innerW)
   }
 
-  let oy = blockTop + titleH + 1
+  let oy = cardContentTop
   for (const [label, value] of opLines) {
-    oy = labeledLine(doc, label, value, marginX + colW + gap + innerPad, oy, colW - innerPad * 2)
+    oy = infoRowTwoColumn(doc, label, value, marginX + colW + gap + innerPad, oy, innerW)
   }
 
-  y = blockTop + Math.max(clientBlockH, opBlockH) + 4
+  strokeInfoCardOutline(marginX)
+  strokeInfoCardOutline(marginX + colW + gap)
+
+  y = blockTop + blockH + 5
 
   doc.setFont('helvetica', 'bold')
   doc.setFontSize(7)
@@ -411,13 +582,14 @@ export async function renderQuotationPdfDocument(
   y += 4
 
   autoTable(doc, {
+    theme: 'plain',
     startY: y,
     tableWidth: contentW,
-    head: [['Descripción', 'Serie', 'Marca / modelo', 'Cant.', 'Precio', 'Subtotal']],
+    head: [['Marca', 'Modelo', 'Grado', 'Cant.', 'Precio', 'Sub-total']],
     body: payload.items.map((row) => [
-      row.description,
-      row.serial,
-      row.brandModel,
+      row.manufacturer,
+      row.model,
+      row.grade,
       String(row.qty),
       formatQ(row.unitPrice),
       formatQ(row.lineTotal),
@@ -425,13 +597,20 @@ export async function renderQuotationPdfDocument(
     styles: {
       font: 'helvetica',
       fontSize: 7.5,
-      cellPadding: { top: 3, right: 2.5, bottom: 3, left: 2.5 },
+      minCellHeight: 7,
+      cellPadding: { top: 3.5, right: 2.5, bottom: 3.5, left: 2.5 },
       valign: 'middle',
       halign: 'center',
       textColor: [30, 30, 30],
       fillColor: [255, 255, 255],
       lineColor: [200, 200, 200],
-      lineWidth: 0.15,
+      lineWidth: 0.12,
+    },
+    bodyStyles: {
+      fillColor: [255, 255, 255],
+    },
+    alternateRowStyles: {
+      fillColor: [255, 255, 255],
     },
     headStyles: {
       fillColor: [248, 249, 251],
@@ -441,14 +620,13 @@ export async function renderQuotationPdfDocument(
       halign: 'center',
       valign: 'middle',
     },
-    alternateRowStyles: { fillColor: [245, 247, 250] },
     columnStyles: {
-      0: { cellWidth: contentW * 0.28, halign: 'left' },
-      1: { cellWidth: contentW * 0.14, halign: 'center', textColor: [BRAND.r, BRAND.g, BRAND.b] },
-      2: { cellWidth: contentW * 0.24, halign: 'center' },
-      3: { halign: 'center', cellWidth: contentW * 0.08 },
-      4: { halign: 'center', cellWidth: contentW * 0.13 },
-      5: { halign: 'center', cellWidth: contentW * 0.13, fontStyle: 'bold' },
+      0: { cellWidth: contentW * 0.16, halign: 'left' },
+      1: { cellWidth: contentW * 0.28, halign: 'left' },
+      2: { halign: 'center', cellWidth: contentW * 0.12 },
+      3: { halign: 'center', cellWidth: contentW * 0.1 },
+      4: { halign: 'center', cellWidth: contentW * 0.17 },
+      5: { halign: 'center', cellWidth: contentW * 0.17, fontStyle: 'bold' },
     },
     foot: [
       ...(payload.discountApplied > 0 ?
@@ -467,26 +645,45 @@ export async function renderQuotationPdfDocument(
         amount: { fontStyle: 'bold', textColor: [5, 120, 72] },
       }),
     ],
-    footStyles: { fontSize: 7.5, textColor: [80, 80, 80], valign: 'middle', cellPadding: { top: 2.5, right: 2, bottom: 2.5, left: 2 } },
+    footStyles: {
+      fontSize: 7.5,
+      textColor: [80, 80, 80],
+      valign: 'middle',
+      minCellHeight: 8,
+      fillColor: [255, 255, 255],
+      cellPadding: { top: 4, right: 2, bottom: 4, left: 2 },
+    },
     margin: { left: marginX, right: marginX },
-    didDrawPage: () => drawPdfFooter(doc, marginX, pageW),
   })
 
   const tableEnd = (doc as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY
   y = (tableEnd ?? y) + 6
 
   if (payload.notes?.trim()) {
-    y += 4
+    y += 6
     doc.setTextColor(BRAND.r, BRAND.g, BRAND.b)
     doc.setFont('helvetica', 'bold')
     doc.setFontSize(8)
     doc.text('Notas', marginX, y)
+    y += 5
     doc.setFont('helvetica', 'normal')
     doc.setTextColor(50, 50, 50)
-    doc.text(doc.splitTextToSize(payload.notes.trim(), contentW), marginX, y + 4.5)
+    const notesPdf = formatQuotationNotesForPdf(payload.notes)
+    drawHelveticaMultiline(doc, notesPdf, marginX, y, contentW, {
+      fontSize: 8,
+      lineMm: 3.6,
+      textColor: [50, 50, 50],
+    })
   }
 
-  drawPdfFooter(doc, marginX, pageW)
+  appendWarrantyPolicyPageToDocument(doc, buildWarrantyPayloadFromQuotation(payload))
+
+  const pageCount = doc.getNumberOfPages()
+  for (let p = 1; p <= pageCount; p++) {
+    doc.setPage(p)
+    drawPdfFooter(doc, marginX, pageW)
+  }
+
   return doc
 }
 
