@@ -9,6 +9,8 @@ export const VISACUOTA_PUBLISHED_COMMISSION: Readonly<Record<number, number>> = 
   12: 0.08,
   15: 0.1,
   18: 0.12,
+  24: 0.125,
+  36: 0.13,
 }
 
 export const VISACUOTA_PUBLISHED_TABLE: ReadonlyArray<{ installments: number; rate: number; note?: string }> =
@@ -20,6 +22,8 @@ export const VISACUOTA_PUBLISHED_TABLE: ReadonlyArray<{ installments: number; ra
     { installments: 12, rate: 0.08 },
     { installments: 15, rate: 0.1, note: 'Condición especial (*)' },
     { installments: 18, rate: 0.12 },
+    { installments: 24, rate: 0.125 },
+    { installments: 36, rate: 0.13 },
   ]
 
 const SORTED_PUBLISHED = Object.entries(VISACUOTA_PUBLISHED_COMMISSION)

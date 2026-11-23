@@ -1855,11 +1855,59 @@ function resolveSalesPeriodRange(
   return { from: from.toISOString(), to: null }
 }
 
+const MONTH_YM_RE = /^\d{4}-\d{2}$/
+const DATE_YMD_RE = /^\d{4}-\d{2}-\d{2}$/
+
+function resolveSalesDateRange(
+  dateFrom: string,
+  dateTo: string
+): { from: string; to: string } | { error: string } {
+  const fromKey = dateFrom.trim()
+  const toKey = dateTo.trim()
+  if (!DATE_YMD_RE.test(fromKey) || !DATE_YMD_RE.test(toKey)) {
+    return { error: 'Use fechas válidas (AAAA-MM-DD)' }
+  }
+  const [y1, m1, d1] = fromKey.split('-').map(Number)
+  const [y2, m2, d2] = toKey.split('-').map(Number)
+  const from = new Date(y1, m1 - 1, d1, 0, 0, 0, 0)
+  const to = new Date(y2, m2 - 1, d2, 23, 59, 59, 999)
+  if (from.getTime() > to.getTime()) {
+    return { error: '«Desde» debe ser anterior o igual a «hasta»' }
+  }
+  return { from: from.toISOString(), to: to.toISOString() }
+}
+
+function resolveSalesMonthRange(
+  monthFrom: string,
+  monthTo: string
+): { from: string; to: string } | { error: string } {
+  const fromKey = monthFrom.trim()
+  const toKey = monthTo.trim()
+  if (!MONTH_YM_RE.test(fromKey) || !MONTH_YM_RE.test(toKey)) {
+    return { error: 'Use meses válidos (AAAA-MM)' }
+  }
+  const [y1, m1] = fromKey.split('-').map(Number)
+  const [y2, m2] = toKey.split('-').map(Number)
+  if (m1 < 1 || m1 > 12 || m2 < 1 || m2 > 12) {
+    return { error: 'Mes inválido' }
+  }
+  if (y1 > y2 || (y1 === y2 && m1 > m2)) {
+    return { error: 'El mes «desde» debe ser anterior o igual al «hasta»' }
+  }
+  const from = new Date(y1, m1 - 1, 1, 0, 0, 0, 0)
+  const to = new Date(y2, m2, 0, 23, 59, 59, 999)
+  return { from: from.toISOString(), to: to.toISOString() }
+}
+
 export async function getSalesOrders(options?: {
   status?: string
   search?: string
   period?: SalesPeriod
   month?: string
+  monthFrom?: string
+  monthTo?: string
+  dateFrom?: string
+  dateTo?: string
 }) {
   const supabase = await createClient()
   const status = options?.status
@@ -1886,7 +1934,27 @@ export async function getSalesOrders(options?: {
     query = query.eq('status', status)
   }
 
-  const { from, to } = resolveSalesPeriodRange(period, month)
+  let from: string | null = null
+  let to: string | null = null
+  if (options?.dateFrom && options?.dateTo) {
+    const range = resolveSalesDateRange(options.dateFrom, options.dateTo)
+    if ('error' in range) {
+      return { data: [], error: range.error }
+    }
+    from = range.from
+    to = range.to
+  } else if (options?.monthFrom && options?.monthTo) {
+    const range = resolveSalesMonthRange(options.monthFrom, options.monthTo)
+    if ('error' in range) {
+      return { data: [], error: range.error }
+    }
+    from = range.from
+    to = range.to
+  } else {
+    const resolved = resolveSalesPeriodRange(period, month)
+    from = resolved.from
+    to = resolved.to
+  }
   if (from) query = query.gte('created_at', from)
   if (to) query = query.lte('created_at', to)
 

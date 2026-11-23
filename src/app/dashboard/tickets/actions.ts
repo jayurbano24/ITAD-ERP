@@ -7,6 +7,7 @@ import type { TicketItem } from '@/lib/supabase/types'
 import { logTicketHistory } from './history'
 import { parseOrderReferences } from '@/lib/tickets/orderReferences'
 import { createAuditLog } from '@/lib/audit'
+import { resolveTicketUnitsProgress } from '@/lib/tickets/ticketUnitsProgress'
 
 export type TicketStatus =
   | 'draft'
@@ -474,9 +475,40 @@ export async function updateTicketStatus(
 
   const updateData: Record<string, unknown> = { status: newStatus }
 
-  // Si se completa, agregar fecha
-  if (newStatus === 'completed') {
-    updateData.completed_at = new Date().toISOString()
+  const terminal = newStatus === 'completed' || newStatus === 'closed'
+  if (terminal) {
+    if (newStatus === 'completed') {
+      updateData.completed_at = new Date().toISOString()
+    }
+
+    const { data: current } = await supabase
+      .from('operations_tickets')
+      .select(
+        `
+        expected_units,
+        received_units,
+        status,
+        ticket_items (
+          collected_serial
+        )
+      `
+      )
+      .eq('id', ticketId)
+      .single()
+
+    if (current) {
+      const { received } = resolveTicketUnitsProgress({
+        status: newStatus,
+        expected_units: current.expected_units,
+        received_units: current.received_units,
+        ticket_items: (current as { ticket_items?: { collected_serial?: string | null }[] })
+          .ticket_items,
+      })
+      const stored = Number(current.received_units ?? 0)
+      if (received > stored) {
+        updateData.received_units = received
+      }
+    }
   }
 
   const { error } = await supabase

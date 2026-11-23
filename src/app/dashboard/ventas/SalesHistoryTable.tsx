@@ -16,11 +16,10 @@ import ExcelColumnFilter from '@/app/dashboard/inventario/bodega/components/Exce
 import DownloadWarrantyButton from './DownloadWarrantyButton'
 import SalePolicyCommentCell from './SalePolicyCommentCell'
 import SaleTotalEditCell from './SaleTotalEditCell'
-import DownloadSalesExcelButton from './DownloadSalesExcelButton'
-import DownloadSalesAdvancedExcelButton from './DownloadSalesAdvancedExcelButton'
+import { mapSalesOrderToExcelRow } from '@/lib/ventas/mapSalesOrderToExcelRow'
+import type { VentasExportSelection } from './ventasExportTypes'
 import SatInvoiceEditCell from './SatInvoiceEditCell'
 import { formatSaleStatusLabel, formatSalesChannel } from '@/lib/ventas/salesChannel'
-import type { SalesExcelRow } from '@/lib/ventas/exportSalesExcel'
 import { saleOrderToAdvancedExcelRow } from '@/lib/ventas/exportSalesAdvancedExcel'
 import type { SaleExchangeRecord, SaleSerialSearchHint } from './actions'
 
@@ -69,6 +68,7 @@ type Props = {
   month?: string
   status?: string
   className?: string
+  onExportSelectionChange?: (selection: VentasExportSelection | null) => void
 }
 
 const EMPTY = '(Vacío)'
@@ -163,51 +163,6 @@ function matchesFilters(
   return true
 }
 
-function toExcelRow(order: SalesHistoryOrder): SalesExcelRow {
-  const items = Array.isArray(order.items) ? order.items : []
-  const channelInfo = formatSalesChannel(
-    order.payment_method,
-    order.internal_notes,
-    order.customer_notes
-  )
-  const serials = items
-    .map((it) => it.serial_number || it.asset?.serial_number || '')
-    .filter(Boolean)
-    .join(', ')
-  const salesRep =
-    order.sales_rep && typeof order.sales_rep === 'object'
-      ? String(order.sales_rep.full_name || '')
-      : ''
-
-  const invoice = formatInvoiceLabel(order.invoice_number)
-  const sat = formatSatInvoiceLabel(order.sat_invoice_number)
-
-  const fiscal = order.fiscal_withholding
-  const isAgent = fiscal?.isWithholdingAgent ?? false
-
-  return {
-    createdAt: new Date(order.created_at).toLocaleString('es-GT'),
-    customerName: order.customer?.commercial_name || 'N/A',
-    customerNit: order.customer?.tax_id_nit || '',
-    invoiceNumber: invoice === EMPTY ? '' : invoice,
-    satInvoiceNumber: sat === EMPTY ? '' : sat,
-    itemsCount: items.length,
-    serials,
-    channel: channelInfo.channel,
-    channelDetail: channelInfo.detail,
-    subtotal: Number(order.subtotal || 0),
-    taxAmount: Number(order.tax_amount || 0),
-    totalAmount: Number(order.total_amount || 0),
-    isWithholdingAgent: isAgent,
-    withholdingRate: fiscal?.withholdingRate ?? 0.15,
-    ivaWithholdingAmount: fiscal?.ivaWithholdingAmount ?? 0,
-    netAfterIvaWithholding:
-      fiscal?.netAfterIvaWithholding ?? Number(order.total_amount || 0),
-    status: formatSaleStatusLabel(order.status),
-    salesRep,
-  }
-}
-
 export default function SalesHistoryTable({
   orders,
   searchQuery,
@@ -215,6 +170,7 @@ export default function SalesHistoryTable({
   month,
   status,
   className,
+  onExportSelectionChange,
 }: Props) {
   const [columnFilters, setColumnFilters] = useState<Record<string, Set<string> | null>>({})
   const [sort, setSort] = useState<{ columnId: ColumnId; dir: 'asc' | 'desc' } | null>(null)
@@ -354,7 +310,7 @@ export default function SalesHistoryTable({
   }, [filteredOrders, selectedIds, selectedCount])
 
   const excelRows = useMemo(
-    () => excelExportOrders.map(toExcelRow),
+    () => excelExportOrders.map(mapSalesOrderToExcelRow),
     [excelExportOrders]
   )
 
@@ -362,6 +318,19 @@ export default function SalesHistoryTable({
     () => excelExportOrders.map(saleOrderToAdvancedExcelRow),
     [excelExportOrders]
   )
+
+  useEffect(() => {
+    if (!onExportSelectionChange) return
+    if (selectedCount > 0) {
+      onExportSelectionChange({
+        selectedCount,
+        excelRows,
+        advancedRows: advancedExcelRows,
+      })
+    } else {
+      onExportSelectionChange(null)
+    }
+  }, [onExportSelectionChange, selectedCount, excelRows, advancedExcelRows])
 
   const options = useMemo(
     () => ({
@@ -426,22 +395,6 @@ export default function SalesHistoryTable({
               className="w-full h-8 pl-8 pr-2 rounded-lg border border-gray-200 dark:border-surface-700 bg-gray-50 dark:bg-surface-950 text-xs font-medium text-gray-900 dark:text-white"
             />
           </form>
-          <DownloadSalesExcelButton
-            rows={excelRows}
-            exportHint={
-              selectedCount > 0
-                ? `Exportar ${selectedCount} seleccionada${selectedCount === 1 ? '' : 's'}`
-                : 'Exportar listado filtrado'
-            }
-          />
-          <DownloadSalesAdvancedExcelButton
-            rows={advancedExcelRows}
-            exportHint={
-              selectedCount > 0
-                ? `Avanzado: ${selectedCount} venta(s) — Visacuota y neto`
-                : 'Avanzado: filtro actual — comisión Visacuota y neto'
-            }
-          />
         </div>
       </div>
 

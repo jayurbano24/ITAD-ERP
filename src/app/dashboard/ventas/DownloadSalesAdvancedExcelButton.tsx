@@ -57,7 +57,7 @@ export default function DownloadSalesAdvancedExcelButton({ rows, className, expo
         ) : (
           <FileBarChart className="h-3.5 w-3.5" />
         )}
-        Excel avanzado
+        Reporte avanzado
       </button>
       {error ? (
         <span className="text-[10px] font-bold text-rose-600 max-w-[200px] text-right">{error}</span>

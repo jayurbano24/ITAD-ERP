@@ -49,6 +49,7 @@ import {
 import type { ReceiptPrefillResult } from '@/lib/tickets/receiptPrefillService'
 import { isReceiptPdfFile, isReceptionSpreadsheetFile } from '@/lib/tickets/parseReceptionExcel'
 import { formatOrderReferences, parseOrderReferences } from '@/lib/tickets/orderReferences'
+import { resolveTicketUnitsProgress } from '@/lib/tickets/ticketUnitsProgress'
 import { type CrmEntity } from '../../clientes/actions'
 import { createCustomerQuick } from '../../ventas/actions'
 import { type CatalogItem } from '../../configuracion/usuarios/actions'
@@ -430,12 +431,17 @@ export default function TicketsTable({ initialTickets, clients, serviceTypes, br
             {
               header: 'Unidades',
               key: 'units',
-              render: (ticket) => (
-                <div className="flex items-center gap-2 font-mono text-xs font-bold">
-                  <Package className="w-4 h-4 text-gray-500 dark:text-gray-400" />
-                  <Text variant="body" className="font-bold">{ticket.received_units}/{ticket.expected_units}</Text>
-                </div>
-              )
+              render: (ticket) => {
+                const { received, expected } = resolveTicketUnitsProgress(ticket)
+                return (
+                  <div className="flex items-center gap-2 font-mono text-xs font-bold">
+                    <Package className="w-4 h-4 text-gray-500 dark:text-gray-400" />
+                    <Text variant="body" className="font-bold">
+                      {received}/{expected}
+                    </Text>
+                  </div>
+                )
+              }
             },
             {
               header: 'Fecha',
@@ -1720,19 +1726,27 @@ function ViewTicketModal({
                     <Package className="w-4 h-4" />
                     <span className="text-sm font-medium">Unidades</span>
                   </div>
-                  <p className="text-white font-medium">
-                    {ticket.received_units} de {ticket.expected_units} recibidas
-                  </p>
-                  <div className="mt-2 h-2 bg-surface-700 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-brand-500 rounded-full transition-all"
-                      style={{
-                        width: ticket.expected_units > 0
-                          ? `${Math.min((ticket.received_units / ticket.expected_units) * 100, 100)}%`
-                          : '0%'
-                      }}
-                    />
-                  </div>
+                  {(() => {
+                    const { received, expected } = resolveTicketUnitsProgress(ticket)
+                    return (
+                      <>
+                        <p className="text-white font-medium">
+                          {received} de {expected} recibidas
+                        </p>
+                        <div className="mt-2 h-2 bg-surface-700 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-brand-500 rounded-full transition-all"
+                            style={{
+                              width:
+                                expected > 0
+                                  ? `${Math.min((received / expected) * 100, 100)}%`
+                                  : '0%',
+                            }}
+                          />
+                        </div>
+                      </>
+                    )
+                  })()}
                 </div>
 
                 {/* Fecha de Recolección */}
