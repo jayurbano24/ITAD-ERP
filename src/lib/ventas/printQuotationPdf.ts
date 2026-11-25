@@ -134,6 +134,7 @@ export function buildQuotationPrintPayload(
       qty: item.quantity,
       unitPrice: item.unit_price,
       lineTotal: item.line_total,
+      grade: item.condition?.trim() || undefined,
     })),
   }
 }
@@ -166,6 +167,7 @@ export type QuotationPrintPayload = {
     qty: number
     unitPrice: number
     lineTotal: number
+    grade?: string
   }>
 }
 

@@ -134,8 +134,10 @@ export function buildProductLabelPrintDocument(input: {
   const profile = getProductLabelPrinterProfile(input.printerId)
   const asset = input.asset
   const classifications = asset.inputClassifications || {}
-  const resolved = resolveAssetHardwareSpecs(asset.specifications ?? null)
-  const specs = { ...resolved, ...(asset.hardwareSpecs || {}) }
+  const specs = resolveAssetHardwareSpecs({
+    ...(asset.specifications ?? {}),
+    hardware_specs: asset.hardwareSpecs,
+  })
   const compact = profile.compact
   const diskLabel = formatDiskLabel(specs)
 

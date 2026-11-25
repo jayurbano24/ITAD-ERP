@@ -44,10 +44,10 @@ export default function ProductLabelModal({ asset, onClose }: ProductLabelModalP
   }, [asset.serial_number])
 
   const classifications = asset.inputClassifications || {}
-  const specs = {
-    ...resolveAssetHardwareSpecs(asset.specifications ?? null),
-    ...(asset.hardwareSpecs || {}),
-  }
+  const specs = resolveAssetHardwareSpecs({
+    ...(asset.specifications ?? {}),
+    hardware_specs: asset.hardwareSpecs,
+  })
   const ramLabel = formatRamLabel(specs)
   const diskLabel = formatDiskLabel(specs)
   const profile = getProductLabelPrinterProfile(printerId)
