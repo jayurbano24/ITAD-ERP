@@ -266,6 +266,7 @@ export async function getWarehouseAssets(): Promise<WarehouseAsset[]> {
     classification_f: string | null
     classification_c: string | null
     processor: string | null
+    processor_generation: string | null
     bios_version: string | null
     ram_capacity: string | null
     ram_type: string | null
@@ -319,6 +320,7 @@ export async function getWarehouseAssets(): Promise<WarehouseAsset[]> {
       classification_f: (ti.classification_f as string) || null,
       classification_c: (ti.classification_c as string) || null,
       processor: (meta.processor as string) || null,
+      processor_generation: (meta.processor_generation as string) || null,
       bios_version: (meta.bios_version as string) || null,
       ram_capacity: (meta.ram_capacity as string) || null,
       ram_type: (meta.ram_type as string) || null,
@@ -435,36 +437,43 @@ export async function getWarehouseAssets(): Promise<WarehouseAsset[]> {
         };
       }
 
-      // Hardware specs
+      // Hardware specs: fusionar campo a campo (evita perder RAM si ya hay solo CPU en asset)
       const existingHardware = (finalSpecs.hardware_specs as Record<string, unknown>) || {};
-      const hasExistingHardware = existingHardware.processor || existingHardware.ram_capacity || existingHardware.disk_capacity;
+      const mergedHardware: Record<string, unknown> = { ...existingHardware };
 
-      // Agregar accesorios si existen
+      const mergeHw = (ticketKey: keyof TicketItemData, hwKey: string) => {
+        const cur = mergedHardware[hwKey];
+        const fromTicket = ticketItem[ticketKey];
+        if (
+          (cur == null || String(cur).trim() === '') &&
+          fromTicket != null &&
+          String(fromTicket).trim() !== ''
+        ) {
+          mergedHardware[hwKey] = String(fromTicket).trim();
+        }
+      };
+
       let accessoriesArr: { name: string; quantity: number }[] = [];
       if (ticketItem.id && accessoriesByTicketItem[ticketItem.id]) {
         accessoriesArr = accessoriesByTicketItem[ticketItem.id];
       }
 
-      if (!hasExistingHardware) {
-        if (ticketItem.processor || ticketItem.ram_capacity || ticketItem.disk_capacity || ticketItem.keyboard_type || accessoriesArr.length > 0) {
-          finalSpecs.hardware_specs = {
-            processor: ticketItem.processor || undefined,
-            bios_version: ticketItem.bios_version || undefined,
-            ram_capacity: ticketItem.ram_capacity || undefined,
-            ram_type: ticketItem.ram_type || undefined,
-            disk_capacity: ticketItem.disk_capacity || undefined,
-            disk_type: ticketItem.disk_type || undefined,
-            keyboard_type: ticketItem.keyboard_type || undefined,
-            keyboard_version: ticketItem.keyboard_version || undefined,
-            accessories: accessoriesArr.length > 0 ? accessoriesArr : undefined
-          };
-        }
-      } else if (accessoriesArr.length > 0) {
-        // Si ya hay hardware_specs, solo agrega accesorios
-        finalSpecs.hardware_specs = {
-          ...existingHardware,
-          accessories: accessoriesArr
-        };
+      mergeHw('processor', 'processor');
+      mergeHw('processor_generation', 'processor_generation');
+      mergeHw('bios_version', 'bios_version');
+      mergeHw('ram_capacity', 'ram_capacity');
+      mergeHw('ram_type', 'ram_type');
+      mergeHw('disk_capacity', 'disk_capacity');
+      mergeHw('disk_type', 'disk_type');
+      mergeHw('keyboard_type', 'keyboard_type');
+      mergeHw('keyboard_version', 'keyboard_version');
+
+      if (accessoriesArr.length > 0) {
+        mergedHardware.accessories = accessoriesArr;
+      }
+
+      if (Object.keys(mergedHardware).length > 0) {
+        finalSpecs.hardware_specs = mergedHardware;
       }
 
       // Reception notes

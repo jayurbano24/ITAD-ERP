@@ -6,6 +6,7 @@ import { createClient } from '@/lib/supabase/server'
 
 import { cookies } from 'next/headers'
 import { SessionUsuarioSchema } from '@/lib/schemas'
+import { randomUUID } from 'crypto'
 import { resolveLoginEmail } from '@/lib/auth/resolveLoginEmail'
 
 /**
@@ -18,7 +19,7 @@ export async function login(formData: FormData) {
 
   const identifier = (formData.get('email') as string) || ''
   const password = formData.get('password') as string
-  const deviceId = formData.get('deviceId') as string
+  const deviceId = String(formData.get('deviceId') || '').trim() || randomUUID()
 
   if (!identifier.trim() || !password) {
     redirect('/?error=MissingCredentials')

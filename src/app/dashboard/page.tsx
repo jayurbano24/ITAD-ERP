@@ -6,18 +6,35 @@ import {
   CheckCircle2,
   TrendingUp,
   Truck,
-  Calendar
+  Calendar,
+  Laptop,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { Text } from '@/components/ui/Text'
-import { StatsCard } from '@/components/ui/StatsCard'
+import DashboardDateFilters from './components/DashboardDateFilters'
+import { resolveDashboardDateRange } from '@/lib/dashboard/dashboardDateRange'
+
+export const dynamic = 'force-dynamic'
+
+type DashboardSearchParams = {
+  from?: string
+  to?: string
+  preset?: string
+}
 
 /**
  * Dashboard Principal - Ruta Protegida
  * Muestra resumen y estadísticas del sistema
  */
-export default async function DashboardPage() {
+export default async function DashboardPage({
+  searchParams,
+}: {
+  searchParams?: Promise<DashboardSearchParams>
+}) {
   const supabase = await createClient()
+  const params = (await searchParams) ?? {}
+  const dateRange = resolveDashboardDateRange(params)
+  const { fromIso, toIso, hasFilter, preset } = dateRange
 
   // Obtener usuario y perfil
   const { data: { user } } = await supabase.auth.getUser()
@@ -37,59 +54,122 @@ export default async function DashboardPage() {
   const userName = profile?.full_name || user?.email?.split('@')[0] || 'Usuario'
   const companyName = company?.name || 'ITAD ERP Guatemala'
 
-  // Consultas de estadísticas en paralelo
-  const today = new Date()
-  today.setHours(0, 0, 0, 0)
+  const { data: activeWarehouses } = await supabase
+    .from('warehouses')
+    .select('id')
+    .in('code', ['BOD-REC', 'BOD-REM', 'BOD-VAL'])
+
+  const warehouseIds = activeWarehouses?.map((w) => w.id) ?? []
+
+  const applyDate = <T extends { gte: (col: string, v: string) => T; lte: (col: string, v: string) => T }>(
+    q: T,
+    column: string
+  ) => q.gte(column, fromIso).lte(column, toIso)
+
+  const ticketsActiveQuery = supabase
+    .from('operations_tickets')
+    .select('*', { count: 'exact', head: true })
+
+  const ticketsActiveCountPromise =
+    preset === 'all'
+      ? ticketsActiveQuery.in('status', ['open', 'assigned', 'confirmed', 'in_progress'])
+      : applyDate(ticketsActiveQuery, 'created_at')
+
+  const wipingQuery = supabase.from('assets').select('*', { count: 'exact', head: true })
+  const wipingCountPromise =
+    preset === 'all'
+      ? wipingQuery.in('status', ['received', 'wiping'])
+      : applyDate(wipingQuery.in('status', ['received', 'wiping']), 'created_at')
+
+  let completedQuery = supabase
+    .from('operations_tickets')
+    .select('*', { count: 'exact', head: true })
+    .eq('status', 'completed')
+  if (preset !== 'all') {
+    completedQuery = applyDate(completedQuery, 'completed_at')
+  }
+
+  let soldQuery = supabase
+    .from('assets')
+    .select('*', { count: 'exact', head: true })
+    .eq('status', 'sold')
+    .ilike('asset_type', 'laptop')
+  if (preset !== 'all') {
+    soldQuery = applyDate(soldQuery, 'sold_at')
+  }
 
   const [
-    { data: activeWarehouses },
     { count: activeTicketsCount },
     { count: wipingCount },
-    { count: completedTodayCount }
+    { count: completedCount },
+    { count: soldLaptopsCount },
   ] = await Promise.all([
-    // 1. Obtener IDs de bodegas principales
-    supabase
-      .from('warehouses')
-      .select('id')
-      .in('code', ['BOD-REC', 'BOD-REM', 'BOD-VAL']),
-
-    // 2. Tickets Activos
-    supabase
-      .from('operations_tickets')
-      .select('*', { count: 'exact', head: true })
-      .in('status', ['open', 'assigned', 'confirmed', 'in_progress']),
-
-    // 3. En Proceso de Borrado
-    supabase
-      .from('assets')
-      .select('*', { count: 'exact', head: true })
-      .in('status', ['received', 'wiping']),
-
-    // 4. Tickets Completados Hoy
-    supabase
-      .from('operations_tickets')
-      .select('*', { count: 'exact', head: true })
-      .eq('status', 'completed')
-      .gte('completed_at', today.toISOString())
+    ticketsActiveCountPromise,
+    wipingCountPromise,
+    completedQuery,
+    soldQuery,
   ])
 
-  // Calcular total de assets en bodegas principales
   let assetsCount = 0
-  if (activeWarehouses && activeWarehouses.length > 0) {
-    const warehouseIds = activeWarehouses.map(w => w.id)
-    const { count } = await supabase
+  if (warehouseIds.length > 0) {
+    let assetsQuery = supabase
       .from('assets')
       .select('*', { count: 'exact', head: true })
       .in('current_warehouse_id', warehouseIds)
+
+    if (preset !== 'all') {
+      assetsQuery = applyDate(assetsQuery, 'created_at')
+    }
+
+    const { count } = await assetsQuery
     assetsCount = count || 0
   }
 
-  // Datos reales para las tarjetas
+  const assetsLabel = preset === 'all' ? 'Assets en Bodega' : 'Recepciones (período)'
+  const ticketsActiveLabel = preset === 'all' ? 'Tickets Activos' : 'Tickets creados'
+  const completedLabel = preset === 'today' ? 'Tickets completados hoy' : 'Tickets completados'
+
   const stats = [
-    { label: 'Assets en Bodega', value: assetsCount.toLocaleString() || '0', icon: Package, color: 'text-blue-400', bg: 'bg-blue-500/10' },
-    { label: 'Tickets Activos', value: activeTicketsCount?.toString() || '0', icon: FileText, color: 'text-amber-400', bg: 'bg-amber-500/10' },
-    { label: 'En Proceso de Borrado', value: wipingCount?.toString() || '0', icon: Clock, color: 'text-purple-400', bg: 'bg-purple-500/10' },
-    { label: 'Tickets Completados Hoy', value: completedTodayCount?.toString() || '0', icon: CheckCircle2, color: 'text-green-400', bg: 'bg-green-500/10' },
+    {
+      label: assetsLabel,
+      value: assetsCount.toLocaleString(),
+      icon: Package,
+      color: 'text-blue-400',
+      bg: 'bg-blue-500/10',
+      hint: preset === 'all' ? 'Inventario actual' : 'Equipos registrados en el período',
+    },
+    {
+      label: ticketsActiveLabel,
+      value: (activeTicketsCount ?? 0).toString(),
+      icon: FileText,
+      color: 'text-amber-400',
+      bg: 'bg-amber-500/10',
+      hint: preset === 'all' ? 'En curso ahora' : 'Nuevos tickets en el período',
+    },
+    {
+      label: 'En Proceso de Borrado',
+      value: (wipingCount ?? 0).toString(),
+      icon: Clock,
+      color: 'text-purple-400',
+      bg: 'bg-purple-500/10',
+      hint: preset === 'all' ? 'Estado actual' : 'En cola en el período',
+    },
+    {
+      label: 'Laptops vendidas',
+      value: (soldLaptopsCount ?? 0).toLocaleString(),
+      icon: Laptop,
+      color: 'text-cyan-400',
+      bg: 'bg-cyan-500/10',
+      hint: preset === 'all' ? 'Histórico total' : 'Por fecha de venta',
+    },
+    {
+      label: completedLabel,
+      value: (completedCount ?? 0).toString(),
+      icon: CheckCircle2,
+      color: 'text-green-400',
+      bg: 'bg-green-500/10',
+      hint: 'Por fecha de cierre',
+    },
   ]
 
   return (
@@ -121,8 +201,15 @@ export default async function DashboardPage() {
 
       {/* Content */}
       <div className="p-8">
+        <DashboardDateFilters
+          preset={dateRange.preset}
+          from={dateRange.from}
+          to={dateRange.to}
+          rangeLabel={dateRange.label}
+        />
+
         {/* Stats Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
+        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-6 mb-8">
           {stats.map((stat) => (
             <div
               key={stat.label}
@@ -136,6 +223,11 @@ export default async function DashboardPage() {
               </div>
               <Text variant="h2" as="p" className="leading-tight">{stat.value}</Text>
               <Text variant="muted" className="mt-1 block uppercase font-bold tracking-tighter">{stat.label}</Text>
+              {'hint' in stat && stat.hint ? (
+                <Text variant="muted" className="mt-1 block text-[10px] normal-case font-medium text-gray-400">
+                  {stat.hint}
+                </Text>
+              ) : null}
             </div>
           ))}
         </div>
@@ -203,8 +295,10 @@ export default async function DashboardPage() {
                 </Text>
               </div>
               <div className="flex justify-between py-2 border-b border-gray-100 dark:border-gray-800">
-                <Text variant="muted">User ID</Text>
-                <Text variant="muted" className="font-mono text-xs">{user?.id?.slice(0, 8)}...</Text>
+                <Text variant="muted">Nombre</Text>
+                <Text variant="body" className="font-semibold text-right max-w-[60%]">
+                  {profile?.full_name || userName}
+                </Text>
               </div>
               <div className="flex justify-between py-2">
                 <Text variant="muted">Último acceso</Text>

@@ -33,6 +33,7 @@ import MoveItemsModal from '@/components/MoveItemsModal'
 import DestructionModal from '@/components/DestructionModal'
 import DestructionDispatchModal from './DestructionDispatchModal'
 import { ProjectBulkDiagnosisModal } from './ProjectBulkDiagnosisModal'
+import WarehouseTableScrollArea from './WarehouseTableScrollArea'
 import { useToast } from '@/context/ToastContext'
 import {
   CLASSIFICATION_C_OPTIONS,
@@ -627,6 +628,10 @@ type WarehouseAssetTableProps = {
   unified?: boolean
 }
 
+const BODEGA_PAGE_SIZE_OPTIONS = [15, 20, 25, 50] as const
+type BodegaPageSize = (typeof BODEGA_PAGE_SIZE_OPTIONS)[number]
+const DEFAULT_BODEGA_PAGE_SIZE: BodegaPageSize = 20
+
 const getQCStatusLabel = (value: boolean | null | undefined) => {
   if (value === true) return 'Pasó'
   if (value === false) return 'Falló'
@@ -666,6 +671,13 @@ export default function WarehouseAssetTable({ sections, unified = false }: Wareh
     });
     return initial;
   });
+
+  const [pageSize, setPageSize] = useState<BodegaPageSize>(DEFAULT_BODEGA_PAGE_SIZE)
+  const [sectionPages, setSectionPages] = useState<Record<string, number>>({})
+
+  const setSectionPage = useCallback((sectionKey: string, page: number) => {
+    setSectionPages((prev) => ({ ...prev, [sectionKey]: page }))
+  }, [])
 
   const displaySections: WarehouseSection[] = unified
     ? [
@@ -855,6 +867,18 @@ export default function WarehouseAssetTable({ sections, unified = false }: Wareh
   }, [])
 
   const clearAllColumnFilters = useCallback(() => setColumnFilters({}), [])
+
+  const sectionPaginationKey = useMemo(
+    () =>
+      displaySections
+        .map((s) => `${s.key}:${s.assets.length}`)
+        .join('|'),
+    [displaySections]
+  )
+
+  useEffect(() => {
+    setSectionPages({})
+  }, [pageSize, columnFilters, sortState, sectionPaginationKey])
 
   const activeFilterCount = useMemo(
     () => Object.values(columnFilters).filter((v) => v !== null && v !== undefined).length,
@@ -1618,8 +1642,19 @@ export default function WarehouseAssetTable({ sections, unified = false }: Wareh
           })
         })()
 
+        const totalPages = Math.max(1, Math.ceil(filteredAssets.length / pageSize))
+        const rawPage = sectionPages[section.key] ?? 1
+        const safePage = Math.min(Math.max(1, rawPage), totalPages)
+        const pageFrom =
+          filteredAssets.length === 0 ? 0 : (safePage - 1) * pageSize + 1
+        const pageTo = Math.min(safePage * pageSize, filteredAssets.length)
+        const paginatedAssets = filteredAssets.slice(
+          (safePage - 1) * pageSize,
+          safePage * pageSize
+        )
+
         return (
-        <div key={section.key} className="bg-white dark:bg-[#1a1f2e] border border-gray-200 dark:border-gray-700 rounded-2xl overflow-hidden shadow-sm dark:shadow-none transition-colors duration-300">
+        <div key={section.key} className="bg-white dark:bg-[#1a1f2e] border border-gray-200 dark:border-gray-700 rounded-2xl overflow-hidden shadow-sm dark:shadow-none transition-colors duration-300 min-w-0 max-w-full">
           <div className="bg-indigo-600 dark:bg-[#1a1f2e] px-6 py-4 flex items-center justify-between border-b border-indigo-500 dark:border-gray-700">
             <div className="flex items-center gap-3">
               <Warehouse className="w-6 h-6 text-white" />
@@ -1734,7 +1769,7 @@ export default function WarehouseAssetTable({ sections, unified = false }: Wareh
             </div>
           </div>
 
-          <div className="overflow-x-auto">
+          <WarehouseTableScrollArea>
             <table className="w-full min-w-max text-[10px] leading-none">
               <thead>
                 <tr className="font-black uppercase tracking-wide text-gray-900 dark:text-white border-b border-gray-100 dark:border-surface-800 whitespace-nowrap">
@@ -1743,8 +1778,14 @@ export default function WarehouseAssetTable({ sections, unified = false }: Wareh
                       <input
                         type="checkbox"
                         className="rounded border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-800 text-indigo-600 focus:ring-indigo-500/20 cursor-pointer w-3.5 h-3.5 transition-all"
-                        onChange={(e) => toggleSelectAll(filteredAssets, e.target.checked)}
-                        checked={filteredAssets.some(a => a.status !== 'destroyed') && filteredAssets.filter(a => a.status !== 'destroyed').every(a => selectedAssetIds.has(a.id))}
+                        onChange={(e) => toggleSelectAll(paginatedAssets, e.target.checked)}
+                        checked={
+                          paginatedAssets.some((a) => a.status !== 'destroyed') &&
+                          paginatedAssets
+                            .filter((a) => a.status !== 'destroyed')
+                            .every((a) => selectedAssetIds.has(a.id))
+                        }
+                        title="Seleccionar equipos visibles en esta página"
                       />
                     </th>
                   )}
@@ -2024,7 +2065,7 @@ export default function WarehouseAssetTable({ sections, unified = false }: Wareh
                     </td>
                   </tr>
                 ) : null}
-                {filteredAssets.map((asset, idx) => (
+                {paginatedAssets.map((asset, idx) => (
                   <tr key={asset.id} className={cn(
                     "transition-colors duration-300 border-b border-gray-100 dark:border-gray-800 whitespace-nowrap",
                     selectedAssetIds.has(asset.id)
@@ -2539,6 +2580,50 @@ export default function WarehouseAssetTable({ sections, unified = false }: Wareh
                 ))}
               </tbody>
             </table>
+          </WarehouseTableScrollArea>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-t border-gray-200 dark:border-gray-700 px-4 py-2.5 bg-gray-50/90 dark:bg-[#131820]">
+            <p className="text-[10px] font-bold text-gray-600 dark:text-gray-400 tabular-nums uppercase tracking-wide">
+              {filteredAssets.length === 0
+                ? '0 equipos'
+                : `Mostrando ${pageFrom}–${pageTo} de ${filteredAssets.length}`}
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <label className="sr-only" htmlFor={`bodega-page-size-${section.key}`}>
+                Filas por página
+              </label>
+              <select
+                id={`bodega-page-size-${section.key}`}
+                value={pageSize}
+                onChange={(e) => setPageSize(Number(e.target.value) as BodegaPageSize)}
+                className="h-8 rounded-lg border border-gray-200 dark:border-gray-600 bg-white dark:bg-[#1a1f2e] px-2 text-[10px] font-bold text-gray-800 dark:text-gray-200"
+                title="Máximo de filas visibles por página"
+              >
+                {BODEGA_PAGE_SIZE_OPTIONS.map((n) => (
+                  <option key={n} value={n}>
+                    {n} / página
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                disabled={safePage <= 1}
+                onClick={() => setSectionPage(section.key, Math.max(1, safePage - 1))}
+                className="h-8 px-3 rounded-lg border border-gray-200 dark:border-gray-600 text-[10px] font-bold disabled:opacity-40 hover:bg-white dark:hover:bg-[#1a1f2e] text-gray-800 dark:text-gray-200"
+              >
+                Anterior
+              </button>
+              <span className="text-[10px] font-black text-gray-700 dark:text-gray-300 tabular-nums min-w-[88px] text-center">
+                Página {safePage} / {totalPages}
+              </span>
+              <button
+                type="button"
+                disabled={safePage >= totalPages}
+                onClick={() => setSectionPage(section.key, Math.min(totalPages, safePage + 1))}
+                className="h-8 px-3 rounded-lg border border-gray-200 dark:border-gray-600 text-[10px] font-bold disabled:opacity-40 hover:bg-white dark:hover:bg-[#1a1f2e] text-gray-800 dark:text-gray-200"
+              >
+                Siguiente
+              </button>
+            </div>
           </div>
         </div>
         )

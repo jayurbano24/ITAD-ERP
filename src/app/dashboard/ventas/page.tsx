@@ -6,6 +6,7 @@ import { type SalesFiscalPeriodStats } from './SalesPeriodFiscalCards'
 import VentasMainContent from './VentasMainContent'
 import VentasMonthFilterForm from './VentasMonthFilterForm'
 import { resolveVentasExportDefaultRange } from '@/lib/ventas/salesExportDateRange'
+import { createClient } from '@/lib/supabase/server'
 import { computeSalesFiscalStats, formatMonthKeyLabel } from '@/lib/ventas/salesFiscalStats'
 
 export const dynamic = 'force-dynamic'
@@ -68,6 +69,17 @@ export default async function VentasPage({
 
   const currentMonthValue = `${new Date().getFullYear()}-${String(new Date().getMonth() + 1).padStart(2, '0')}`
   const exportDefaultRange = resolveVentasExportDefaultRange(period, month)
+
+  const supabase = await createClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  let canVoidSale = false
+  if (user) {
+    const { data: profile } = await supabase.from('profiles').select('role').eq('id', user.id).single()
+    canVoidSale = profile?.role === 'super_admin'
+  }
+
   const queryBase = new URLSearchParams()
   if (q) queryBase.set('q', q)
   if (sp.status) queryBase.set('status', sp.status)
@@ -143,6 +155,7 @@ export default async function VentasPage({
         period={period}
         month={month}
         status={sp.status}
+        canVoidSale={canVoidSale}
       />
     </div>
   )

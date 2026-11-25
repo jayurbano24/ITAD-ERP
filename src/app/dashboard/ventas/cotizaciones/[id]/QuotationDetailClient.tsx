@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import {
   CheckCircle,
@@ -15,6 +16,7 @@ import {
   Download,
   Eye,
   Percent,
+  Pencil,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { QuotationComment, QuotationStatus, SalesQuotation } from '../actions'
@@ -263,6 +265,15 @@ export default function QuotationDetailClient({
         >
           {formatQuotationStatus(status)}
         </span>
+        {status === 'pendiente_aprobacion' && (
+          <Link
+            href={`/dashboard/ventas/cotizaciones/${quotation.id}/editar`}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-gray-300 dark:border-surface-600 text-gray-800 dark:text-surface-200 px-3 py-1.5 text-sm font-semibold bg-white dark:bg-surface-800 hover:border-indigo-400 hover:text-indigo-700"
+          >
+            <Pencil className="w-4 h-4" />
+            Editar cotización
+          </Link>
+        )}
         <button
           type="button"
           onClick={handleViewPdf}

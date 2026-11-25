@@ -22,6 +22,7 @@ type Props = {
   period?: string
   month?: string
   status?: string
+  canVoidSale?: boolean
 }
 
 export default function VentasMainContent({
@@ -36,6 +37,7 @@ export default function VentasMainContent({
   period,
   month,
   status,
+  canVoidSale = false,
 }: Props) {
   const [exportSelection, setExportSelection] = useState<VentasExportSelection | null>(null)
 
@@ -105,6 +107,7 @@ export default function VentasMainContent({
         month={month}
         status={status}
         onExportSelectionChange={onExportSelectionChange}
+        canVoidSale={canVoidSale}
       />
     </>
   )

@@ -239,6 +239,33 @@ export type QuotationClientInput = {
   correo?: string | null
 }
 
+function normalizeQuotationLineInputs(items: QuotationLineInput[]) {
+  return (items || [])
+    .map((line) => {
+      const manufacturer = line.manufacturer?.trim() || ''
+      const model = line.model?.trim() || ''
+      const detail = line.description.trim()
+      const description =
+        detail.length > 0 ? detail : [manufacturer, model].filter(Boolean).join(' — ')
+      const quantity = Math.max(1, Math.floor(Number(line.quantity) || 1))
+      const unit_price = Math.max(0, roundMoney(Number(line.unit_price) || 0))
+      const line_total = roundMoney(unit_price * quantity)
+      return {
+        asset_id: line.asset_id || null,
+        description,
+        manufacturer: manufacturer || null,
+        model: model || null,
+        serial_number: line.serial_number?.trim() || null,
+        condition: line.condition?.trim() || null,
+        asset_type: line.asset_type?.trim() || null,
+        quantity,
+        unit_price,
+        line_total,
+      }
+    })
+    .filter((line) => line.description.length > 0)
+}
+
 export async function createQuotation(input: {
   client: QuotationClientInput
   description?: string | null
@@ -317,29 +344,10 @@ export async function createQuotation(input: {
     return { success: false, error: 'Seleccione un método de pago válido' }
   }
 
-  const normalized = (input.items || [])
-    .map((line) => {
-      const description = line.description.trim()
-      const quantity = Math.max(1, Math.floor(Number(line.quantity) || 1))
-      const unit_price = Math.max(0, roundMoney(Number(line.unit_price) || 0))
-      const line_total = roundMoney(unit_price * quantity)
-      return {
-        asset_id: line.asset_id || null,
-        description,
-        manufacturer: line.manufacturer?.trim() || null,
-        model: line.model?.trim() || null,
-        serial_number: line.serial_number?.trim() || null,
-        condition: line.condition?.trim() || null,
-        asset_type: line.asset_type?.trim() || null,
-        quantity,
-        unit_price,
-        line_total,
-      }
-    })
-    .filter((line) => line.description.length > 0)
+  const normalized = normalizeQuotationLineInputs(input.items)
 
   if (normalized.length === 0) {
-    return { success: false, error: 'Agregue al menos un equipo con descripción y precio' }
+    return { success: false, error: 'Agregue al menos un equipo con marca/modelo y precio' }
   }
 
   const linesListedTotal = roundMoney(normalized.reduce((sum, line) => sum + line.line_total, 0))
@@ -458,6 +466,155 @@ export async function createQuotation(input: {
 
   revalidatePath(LIST_PATH)
   return { success: true, id: data.id, quoteNumber: data.quote_number }
+}
+
+export async function updateQuotation(
+  quotationId: string,
+  input: {
+    client: QuotationClientInput
+    description?: string | null
+    solicitante_tipo: QuotationRequesterType
+    solicitante_empresa?: string | null
+    solicitante_contacto?: string | null
+    payment_method: QuotationPaymentMethod
+    prices_include_iva: boolean
+    warranty_days?: number
+    items: QuotationLineInput[]
+  }
+) {
+  const supabase = await createClient()
+
+  const { data: existing, error: loadErr } = await supabase
+    .from('sales_quotations')
+    .select('id, status, customer_id, quote_number')
+    .eq('id', quotationId)
+    .maybeSingle()
+
+  if (loadErr || !existing) {
+    return { success: false, error: loadErr?.message || 'Cotización no encontrada' }
+  }
+  if (existing.status !== 'pendiente_aprobacion') {
+    return { success: false, error: 'Solo se pueden editar cotizaciones pendientes de aprobación' }
+  }
+
+  const nombre = input.client.nombre.trim()
+  const apellido = input.client.apellido.trim()
+  if (!nombre) return { success: false, error: 'El nombre del cliente es requerido' }
+  if (!apellido) return { success: false, error: 'El apellido del cliente es requerido' }
+
+  const telefono = input.client.telefono?.trim() || ''
+  if (!telefono) {
+    return { success: false, error: 'El número de teléfono del cliente es requerido' }
+  }
+
+  const correoRaw = (input.client.correo || '').trim().toLowerCase()
+  const correo = correoRaw || null
+  if (correo && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(correo)) {
+    return { success: false, error: 'Ingrese un correo electrónico válido' }
+  }
+
+  const commercial_name = `${nombre} ${apellido}`.replace(/\s+/g, ' ').trim()
+  const title = `Cotización — ${commercial_name}`
+
+  const solicitante_tipo = input.solicitante_tipo
+  if (solicitante_tipo !== 'empresa' && solicitante_tipo !== 'cliente_final') {
+    return { success: false, error: 'Indique si la solicitó una empresa o cliente final' }
+  }
+
+  let solicitante_empresa: string | null = null
+  let solicitante_contacto: string | null = null
+  if (solicitante_tipo === 'empresa') {
+    solicitante_empresa = (input.solicitante_empresa || '').trim()
+    solicitante_contacto = (input.solicitante_contacto || '').trim()
+    if (!solicitante_empresa) {
+      return { success: false, error: 'Ingrese el nombre de la empresa solicitante' }
+    }
+    if (!solicitante_contacto) {
+      return { success: false, error: 'Ingrese el contacto dentro de la empresa' }
+    }
+  }
+
+  const payment_method = input.payment_method
+  if (!PAYMENT_METHODS.includes(payment_method)) {
+    return { success: false, error: 'Seleccione un método de pago válido' }
+  }
+
+  const normalized = normalizeQuotationLineInputs(input.items)
+  if (normalized.length === 0) {
+    return { success: false, error: 'Agregue al menos un equipo con marca/modelo y precio' }
+  }
+
+  const linesListedTotal = roundMoney(normalized.reduce((sum, line) => sum + line.line_total, 0))
+  const { subtotal, tax_amount, total } = computeQuotationIva(
+    linesListedTotal,
+    input.prices_include_iva
+  )
+
+  if (existing.customer_id) {
+    const { error: custErr } = await supabase
+      .from('crm_entities')
+      .update({
+        commercial_name,
+        legal_name: apellido,
+        tax_id_nit: input.client.nit?.trim() || 'CF',
+        phone: telefono,
+        address: input.client.direccion?.trim() || null,
+        email: correo,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', existing.customer_id)
+    if (custErr) {
+      return { success: false, error: custErr.message }
+    }
+  }
+
+  const { error: upErr } = await supabase
+    .from('sales_quotations')
+    .update({
+      title,
+      description: input.description?.trim() || null,
+      amount: total,
+      subtotal,
+      tax_amount,
+      prices_include_iva: input.prices_include_iva,
+      solicitante_tipo,
+      solicitante_empresa,
+      solicitante_contacto,
+      payment_method,
+      warranty_days: clampWarrantyDays(input.warranty_days ?? DEFAULT_WARRANTY_DAYS),
+      recipient_email: correo,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', quotationId)
+
+  if (upErr) {
+    return { success: false, error: upErr.message }
+  }
+
+  const { error: delErr } = await supabase
+    .from('sales_quotation_items')
+    .delete()
+    .eq('quotation_id', quotationId)
+
+  if (delErr) {
+    return { success: false, error: delErr.message }
+  }
+
+  const itemRows = normalized.map((line, index) => ({
+    quotation_id: quotationId,
+    sort_order: index,
+    ...line,
+  }))
+
+  const { error: itemsError } = await supabase.from('sales_quotation_items').insert(itemRows)
+  if (itemsError) {
+    return { success: false, error: itemsError.message }
+  }
+
+  revalidatePath(LIST_PATH)
+  revalidatePath(`${LIST_PATH}/${quotationId}`)
+  revalidatePath(`${LIST_PATH}/${quotationId}/editar`)
+  return { success: true, id: quotationId, quoteNumber: existing.quote_number }
 }
 
 export async function addQuotationComment(

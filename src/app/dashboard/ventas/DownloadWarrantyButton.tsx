@@ -10,10 +10,16 @@ type Props = {
   orderId: string
   /** Compacto para filas de tabla del historial */
   compact?: boolean
+  iconOnly?: boolean
   className?: string
 }
 
-export default function DownloadWarrantyButton({ orderId, compact = false, className }: Props) {
+export default function DownloadWarrantyButton({
+  orderId,
+  compact = false,
+  iconOnly = false,
+  className,
+}: Props) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
@@ -38,25 +44,28 @@ export default function DownloadWarrantyButton({ orderId, compact = false, class
   }
 
   return (
-    <div className="inline-flex flex-col items-end gap-0.5">
+    <div className={cn('inline-flex flex-col gap-0.5', iconOnly ? 'items-center' : 'items-end')}>
       <button
         type="button"
         disabled={loading}
         title="Descargar política de garantía PDF"
+        aria-label="PDF garantía"
         onClick={() => void handleDownload()}
         className={cn(
-          compact
-            ? 'inline-flex items-center gap-1 px-2 py-1 rounded-md bg-[#1e3a5f] hover:bg-[#274b7a] disabled:opacity-60 text-white text-[10px] font-black uppercase tracking-wide'
-            : 'inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-[#1e3a5f] hover:bg-[#274b7a] disabled:opacity-60 text-white text-xs font-black uppercase tracking-widest',
+          iconOnly
+            ? 'inline-flex h-7 w-7 items-center justify-center rounded-md border border-[#1e3a5f] bg-[#1e3a5f] hover:bg-[#274b7a] disabled:opacity-60 text-white shrink-0'
+            : compact
+              ? 'inline-flex items-center gap-1 px-2 py-1 rounded-md bg-[#1e3a5f] hover:bg-[#274b7a] disabled:opacity-60 text-white text-[10px] font-black uppercase tracking-wide'
+              : 'inline-flex items-center gap-2 px-5 py-3 rounded-xl bg-[#1e3a5f] hover:bg-[#274b7a] disabled:opacity-60 text-white text-xs font-black uppercase tracking-widest',
           className
         )}
       >
         {loading ? (
-          <Loader2 className={cn(compact ? 'w-3 h-3' : 'w-4 h-4', 'animate-spin')} />
+          <Loader2 className={cn(iconOnly || compact ? 'w-3.5 h-3.5' : 'w-4 h-4', 'animate-spin')} />
         ) : (
-          <FileDown className={compact ? 'w-3 h-3' : 'w-4 h-4'} />
+          <FileDown className={iconOnly || compact ? 'w-3.5 h-3.5' : 'w-4 h-4'} />
         )}
-        {compact ? 'PDF' : 'Descargar política PDF'}
+        {iconOnly ? null : compact ? 'PDF' : 'Descargar política PDF'}
       </button>
       {error && <span className="text-[9px] text-red-500 font-bold max-w-[8rem] text-right">{error}</span>}
     </div>

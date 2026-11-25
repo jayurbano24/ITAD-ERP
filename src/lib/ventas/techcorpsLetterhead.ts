@@ -17,6 +17,10 @@ export const TECHCORPS_LETTERHEAD = {
   email: 'info@techcorpca.com',
   websiteUrl: 'https://www.techcorpca.com/',
   websiteDisplay: 'www.techcorpca.com',
+  /** Franja inferior con slogan, web y sellos R2 / RIOS (cotización PDF y detalle). */
+  certFooterSrc: '/branding/quotation-cert-footer.png',
+  certFooterAlt:
+    'Tech Corp Latam · End-to-End Technology Lifecycle Solutions · www.techcorpca.com · R2 · RIOS',
 } as const
 
 /** Membrete: una línea por dato (dirección, teléfonos, sitio web). */

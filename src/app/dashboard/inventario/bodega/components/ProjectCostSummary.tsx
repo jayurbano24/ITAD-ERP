@@ -1,13 +1,9 @@
 'use client'
 
 import { FolderKanban } from 'lucide-react'
+import type { ProjectCostRow } from '@/lib/inventario/projectCostTypes'
 
-export type ProjectCostRow = {
-  project: string
-  units: number
-  totalCost: number
-  totalSale?: number
-}
+export type { ProjectCostRow } from '@/lib/inventario/projectCostTypes'
 
 function formatQ(n: number) {
   return `Q ${n.toLocaleString('es-GT', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
@@ -26,6 +22,9 @@ export default function ProjectCostSummary({
   const grandCost = rows.reduce((s, r) => s + r.totalCost, 0)
   const grandSale = rows.reduce((s, r) => s + (r.totalSale || 0), 0)
   const showSale = rows.some((r) => (r.totalSale || 0) > 0)
+  const showOriginSplit = rows.some(
+    (r) => (r.purchasedUnits ?? 0) > 0 || (r.processedUnits ?? 0) > 0
+  )
 
   return (
     <div className="rounded-2xl border border-amber-200/60 dark:border-amber-500/20 bg-amber-50/80 dark:bg-amber-500/5 overflow-hidden">
@@ -45,6 +44,16 @@ export default function ProjectCostSummary({
             <tr className="text-left text-[10px] font-black uppercase tracking-wider text-amber-800/70 dark:text-amber-400/70 border-b border-amber-200/40 dark:border-amber-500/10">
               <th className="px-4 py-2">Project #</th>
               <th className="px-4 py-2 text-right">Equipos</th>
+              {showOriginSplit && (
+                <>
+                  <th className="px-4 py-2 text-right text-amber-700 dark:text-amber-400 hidden md:table-cell">
+                    Comprados
+                  </th>
+                  <th className="px-4 py-2 text-right text-emerald-700 dark:text-emerald-400 hidden md:table-cell">
+                    Procesados
+                  </th>
+                </>
+              )}
               <th className="px-4 py-2 text-right">Costo total</th>
               {showSale && (
                 <th className="px-4 py-2 text-right text-emerald-700 dark:text-emerald-400">Venta total</th>
@@ -59,6 +68,16 @@ export default function ProjectCostSummary({
                   {row.project}
                 </td>
                 <td className="px-4 py-2.5 text-right font-bold tabular-nums">{row.units}</td>
+                {showOriginSplit && (
+                  <>
+                    <td className="px-4 py-2.5 text-right font-semibold tabular-nums hidden md:table-cell">
+                      {row.purchasedUnits ?? 0}
+                    </td>
+                    <td className="px-4 py-2.5 text-right font-semibold tabular-nums hidden md:table-cell">
+                      {row.processedUnits ?? 0}
+                    </td>
+                  </>
+                )}
                 <td className="px-4 py-2.5 text-right font-black tabular-nums text-amber-900 dark:text-amber-200">
                   {formatQ(row.totalCost)}
                 </td>
@@ -81,6 +100,16 @@ export default function ProjectCostSummary({
               <td className="px-4 py-2.5 text-right font-black tabular-nums text-amber-950 dark:text-white">
                 {grandUnits}
               </td>
+              {showOriginSplit && (
+                <>
+                  <td className="px-4 py-2.5 text-right font-black tabular-nums hidden md:table-cell">
+                    {rows.reduce((s, r) => s + (r.purchasedUnits ?? 0), 0)}
+                  </td>
+                  <td className="px-4 py-2.5 text-right font-black tabular-nums hidden md:table-cell">
+                    {rows.reduce((s, r) => s + (r.processedUnits ?? 0), 0)}
+                  </td>
+                </>
+              )}
               <td className="px-4 py-2.5 text-right font-black tabular-nums text-amber-950 dark:text-white">
                 {formatQ(grandCost)}
               </td>

@@ -1,22 +1,24 @@
 'use client'
 
 import Link from 'next/link'
-import { ShoppingBag, Package, Wrench } from 'lucide-react'
+import { ShoppingBag, Package, Wrench, FolderKanban } from 'lucide-react'
 import { cn } from '@/lib/utils'
 
-export type RemarketingTab = 'venta' | 'comprados' | 'procesados'
+export type RemarketingTab = 'venta' | 'comprados' | 'procesados' | 'proyectos'
 
 export default function RemarketingTabs({
   activeTab,
   forSaleCount,
   purchasedCount,
   processedCount,
+  projectCount,
   search,
 }: {
   activeTab: RemarketingTab
   forSaleCount: number
   purchasedCount: number
   processedCount: number
+  projectCount: number
   search?: string
 }) {
   const qs = (tab: string) => {
@@ -55,12 +57,19 @@ export default function RemarketingTabs({
       icon: Wrench,
       activeClass: 'bg-emerald-600 text-white border-emerald-500 shadow-lg shadow-emerald-500/20',
     },
+    {
+      id: 'proyectos',
+      label: 'Total por Project',
+      count: projectCount,
+      icon: FolderKanban,
+      activeClass: 'bg-sky-600 text-white border-sky-500 shadow-lg shadow-sky-500/20',
+    },
   ]
 
   return (
     <div className="space-y-2">
       <p className="text-[10px] font-bold uppercase tracking-wider text-gray-400 dark:text-gray-500 px-1">
-        Remarketing · disponibles / comprados / que ya pasaron el proceso
+        Remarketing · equipos, compras, procesados y resumen por proyecto
       </p>
       <div className="flex flex-wrap gap-2">
         {tabs.map((tab) => {

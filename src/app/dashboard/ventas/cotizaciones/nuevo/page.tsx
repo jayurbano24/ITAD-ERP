@@ -35,13 +35,16 @@ function roundMoney(n: number): number {
   return Math.round(n * 100) / 100
 }
 
+function lineDetailFromAsset(asset: AssetForSale): string {
+  return [asset.condition, asset.serial_number].filter(Boolean).join(' · ')
+}
+
 function lineFromAsset(asset: AssetForSale): DraftLine {
-  const desc = [asset.manufacturer, asset.model, asset.condition].filter(Boolean).join(' · ') || asset.internal_tag
   const defaultPrice = asset.sales_price != null && asset.sales_price > 0 ? asset.sales_price : 0
   return {
     key: `asset-${asset.id}-${Date.now()}`,
     asset_id: asset.id,
-    description: desc,
+    description: lineDetailFromAsset(asset),
     manufacturer: asset.manufacturer,
     model: asset.model,
     serial_number: asset.serial_number,
@@ -539,11 +542,11 @@ export default function NuevaCotizacionPage() {
                         onClick={() => addAssetLine(a)}
                         className="w-full text-left px-3 py-2 text-sm text-gray-900 dark:text-white hover:bg-emerald-50 dark:hover:bg-emerald-500/10"
                       >
-                        <span className="font-medium uppercase">
+                        <span className="block font-semibold uppercase tracking-wide text-gray-900 dark:text-white">
                           {a.manufacturer || '—'}
                         </span>
-                        <span className="text-gray-600 dark:text-surface-300 ml-1.5 uppercase">
-                          {a.model || a.internal_tag}
+                        <span className="block text-gray-600 dark:text-surface-300 uppercase text-xs mt-0.5">
+                          {a.model || a.internal_tag || '—'}
                         </span>
                         {a.sales_price != null && a.sales_price > 0 && (
                           <span className="text-xs font-semibold text-emerald-600 dark:text-emerald-400 ml-2">
@@ -586,8 +589,9 @@ export default function NuevaCotizacionPage() {
               <table className="w-full text-xs sm:text-sm min-w-[560px]">
                 <thead>
                   <tr className="border-b border-gray-200 dark:border-surface-700 text-left text-gray-500">
-                    <th className="py-2 pr-2">Descripción</th>
-                    <th className="py-2 pr-2">Marca / modelo</th>
+                    <th className="py-2 pr-2">Marca</th>
+                    <th className="py-2 pr-2">Modelo</th>
+                    <th className="py-2 pr-2">Detalle</th>
                     <th className="py-2 pr-2 w-16">Cant.</th>
                     <th className="py-2 pr-2 w-28">
                       Precio (Q)
@@ -608,27 +612,27 @@ export default function NuevaCotizacionPage() {
                       <tr key={line.key} className="border-b border-gray-100 dark:border-surface-800 align-top">
                         <td className="py-2 pr-2">
                           <input
-                            value={line.description}
-                            onChange={(e) => updateLine(line.key, { description: e.target.value })}
+                            value={line.manufacturer || ''}
+                            onChange={(e) => updateLine(line.key, { manufacturer: e.target.value })}
                             className={inputClassSm}
-                            placeholder="Descripción"
+                            placeholder="Marca"
                           />
                         </td>
                         <td className="py-2 pr-2">
-                          <div className="flex flex-col gap-1">
-                            <input
-                              value={line.manufacturer || ''}
-                              onChange={(e) => updateLine(line.key, { manufacturer: e.target.value })}
-                              className={inputClassSm}
-                              placeholder="Marca"
-                            />
-                            <input
-                              value={line.model || ''}
-                              onChange={(e) => updateLine(line.key, { model: e.target.value })}
-                              className={inputClassSm}
-                              placeholder="Modelo"
-                            />
-                          </div>
+                          <input
+                            value={line.model || ''}
+                            onChange={(e) => updateLine(line.key, { model: e.target.value })}
+                            className={inputClassSm}
+                            placeholder="Modelo"
+                          />
+                        </td>
+                        <td className="py-2 pr-2">
+                          <input
+                            value={line.description}
+                            onChange={(e) => updateLine(line.key, { description: e.target.value })}
+                            className={inputClassSm}
+                            placeholder="Clasificación, serie, notas…"
+                          />
                         </td>
                         <td className="py-2 pr-2">
                           <input
@@ -668,7 +672,7 @@ export default function NuevaCotizacionPage() {
                 </tbody>
                 <tfoot className="text-sm">
                   <tr>
-                    <td colSpan={4} className="pt-3 text-right text-gray-600 dark:text-surface-400">
+                    <td colSpan={5} className="pt-3 text-right text-gray-600 dark:text-surface-400">
                       Subtotal (sin IVA)
                     </td>
                     <td className="pt-3 text-right tabular-nums font-medium text-gray-900 dark:text-white">
@@ -677,7 +681,7 @@ export default function NuevaCotizacionPage() {
                     <td />
                   </tr>
                   <tr>
-                    <td colSpan={4} className="pt-1 text-right text-gray-600 dark:text-surface-400">
+                    <td colSpan={5} className="pt-1 text-right text-gray-600 dark:text-surface-400">
                       IVA ({Math.round(QUOTATION_IVA_RATE * 100)}%)
                     </td>
                     <td className="pt-1 text-right tabular-nums font-medium text-gray-900 dark:text-white">
@@ -686,7 +690,7 @@ export default function NuevaCotizacionPage() {
                     <td />
                   </tr>
                   <tr>
-                    <td colSpan={4} className="pt-2 pb-1 text-right font-bold text-gray-800 dark:text-surface-200">
+                    <td colSpan={5} className="pt-2 pb-1 text-right font-bold text-gray-800 dark:text-surface-200">
                       Total cotización (con IVA)
                     </td>
                     <td className="pt-2 pb-1 text-right font-extrabold text-emerald-600 tabular-nums">

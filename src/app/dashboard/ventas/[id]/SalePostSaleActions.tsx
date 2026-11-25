@@ -243,9 +243,10 @@ export default function SalePostSaleActions({
           Garantía y post-venta (desde el detalle de la venta)
         </p>
         <p className="text-xs text-amber-900/80 dark:text-amber-200/90 leading-relaxed">
-          Cambio de serie o <strong>devolución de dinero</strong>: la serie vendida ingresa a{' '}
-          <strong>Bodega de Remplazo (BOD-RPL)</strong> por reclamación. En garantía registra{' '}
-          <strong>motivo</strong> y <strong>serial de entrega</strong>. No uses Nueva venta.
+          <strong>Devolver dinero</strong> (hubo cobro): serie a <strong>BOD-RPL</strong> y registro
+          del monto devuelto. <strong>Cambio garantía</strong>: reemplazo en la misma venta.{' '}
+          <strong>Anular venta</strong> (sin cobro, Super Admin): cancela toda la venta y envía
+          equipos a <strong>BOD-REM</strong> — no es lo mismo que devolver dinero.
         </p>
       </div>
 

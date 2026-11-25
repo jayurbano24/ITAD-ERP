@@ -104,3 +104,65 @@ export function listedTotalFromItems(items: LineItemLike[] | undefined | null, f
   if (!items?.length) return fallback
   return roundMoney(items.reduce((sum, i) => sum + (Number(i.line_total) || 0), 0))
 }
+
+export type PosSaleLineForTotals = {
+  unitPrice: number
+  listedPrice?: number | null
+  priceIncludesIva?: boolean | null
+}
+
+/**
+ * POS: mezcla líneas “sin IVA” (base en unitPrice) y “con IVA” (precio en listedPrice).
+ * Si solo se suman las bases desglosadas por línea, montos redondos (ej. 5 × Q3,000 c/IVA)
+ * pueden quedar un centavo bajo (14,999.99 vs 15,000.00).
+ */
+export function computePosSaleTotals(
+  lines: PosSaleLineForTotals[],
+  discount?: DiscountInput
+): QuotationTotalsView {
+  let exclusiveSubtotal = 0
+  let inclusiveListedTotal = 0
+
+  for (const line of lines) {
+    const includes = Boolean(line.priceIncludesIva)
+    if (includes) {
+      const listed = roundMoney(Number(line.listedPrice ?? line.unitPrice) || 0)
+      inclusiveListedTotal += listed
+    } else {
+      exclusiveSubtotal += roundMoney(Number(line.unitPrice) || 0)
+    }
+  }
+
+  exclusiveSubtotal = roundMoney(exclusiveSubtotal)
+  inclusiveListedTotal = roundMoney(inclusiveListedTotal)
+
+  const partExcl =
+    exclusiveSubtotal > 0
+      ? computeQuotationIva(exclusiveSubtotal, false)
+      : { subtotal: 0, tax_amount: 0, total: 0 }
+  const partIncl =
+    inclusiveListedTotal > 0
+      ? computeQuotationIva(inclusiveListedTotal, true)
+      : { subtotal: 0, tax_amount: 0, total: 0 }
+
+  const subtotalBeforeDiscount = roundMoney(partExcl.subtotal + partIncl.subtotal)
+
+  let subtotal = subtotalBeforeDiscount
+  const pct = Math.max(0, Number(discount?.discount_percent) || 0)
+  const fixed = Math.max(0, Number(discount?.discount_amount) || 0)
+  let discountApplied = 0
+
+  if (pct > 0) {
+    const capped = Math.min(100, pct)
+    discountApplied = roundMoney((subtotal * capped) / 100)
+    subtotal = roundMoney(subtotal - discountApplied)
+  } else if (fixed > 0) {
+    discountApplied = roundMoney(Math.min(fixed, subtotal))
+    subtotal = roundMoney(subtotal - discountApplied)
+  }
+
+  const tax_amount = roundMoney(subtotal * QUOTATION_IVA_RATE)
+  const total = roundMoney(subtotal + tax_amount)
+
+  return { subtotal, tax_amount, total, subtotalBeforeDiscount, discountApplied }
+}

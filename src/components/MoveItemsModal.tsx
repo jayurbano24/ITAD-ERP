@@ -6,9 +6,17 @@ import { Warehouse, X, ArrowRight, Truck } from 'lucide-react'
 type MoveItemsModalProps = {
     isOpen: boolean
     onClose: () => void
-    selectedAssets: { id: string; serial_number: string | null }[]
+    selectedAssets: { id: string; serial_number: string | null; warehouse_code?: string | null }[]
     currentWarehouseCode?: string
     onMoveSuccess: () => void
+}
+
+function destinationAlreadyHasAllAssets(
+    code: string,
+    assets: { warehouse_code?: string | null }[]
+): boolean {
+    if (assets.length === 0) return false
+    return assets.every((a) => a.warehouse_code != null && a.warehouse_code === code)
 }
 
 const WAREHOUSES = [
@@ -35,6 +43,8 @@ export default function MoveItemsModal({ isOpen, onClose, selectedAssets, curren
 
     useEffect(() => {
         if (isOpen) {
+            setDestination('')
+            setReason('')
             setFetchingCorrelative(true)
             fetch('/api/inventario/bodega/next-correlative')
                 .then(res => res.json())
@@ -48,13 +58,34 @@ export default function MoveItemsModal({ isOpen, onClose, selectedAssets, curren
         }
     }, [isOpen])
 
+    useEffect(() => {
+        if (!isOpen || destination) return
+        const originCodes = new Set(
+            selectedAssets.map((a) => a.warehouse_code).filter((c): c is string => Boolean(c))
+        )
+        if (originCodes.size === 1 && originCodes.has('BOD-VAL')) {
+            setDestination('BOD-REM')
+        }
+    }, [isOpen, destination, selectedAssets])
+
     if (!isOpen) return null
 
-    const availableWarehouses = WAREHOUSES.filter(w => w.code !== currentWarehouseCode)
+    const availableWarehouses = WAREHOUSES.filter((wh) => {
+        if (selectedAssets.length > 0) {
+            return !destinationAlreadyHasAllAssets(wh.code, selectedAssets)
+        }
+        return wh.code !== currentWarehouseCode
+    })
+
+    const allSelectedAlreadyInRemarketing =
+        selectedAssets.length > 0 && destinationAlreadyHasAllAssets('BOD-REM', selectedAssets)
 
 
     const handleMove = async () => {
         if (!destination) return alert('Selecciona una bodega de destino')
+        if (destinationAlreadyHasAllAssets(destination, selectedAssets)) {
+            return alert('Los equipos seleccionados ya están en esa bodega.')
+        }
 
         setLoading(true)
         try {
@@ -81,9 +112,20 @@ export default function MoveItemsModal({ isOpen, onClose, selectedAssets, curren
                 body: JSON.stringify(payload),
             })
 
+            const data = await response.json()
+
             if (!response.ok) {
-                const data = await response.json()
                 throw new Error(data.error || 'Error al mover los equipos')
+            }
+
+            if (data.movementsRecorded === false) {
+                alert(
+                    'Traslado guardado, pero no se registró el correlativo en el historial. Revise permisos o intente de nuevo.'
+                )
+            }
+
+            if (data.correlative) {
+                setCorrelative(data.correlative)
             }
 
             onMoveSuccess()
@@ -128,6 +170,15 @@ export default function MoveItemsModal({ isOpen, onClose, selectedAssets, curren
                             ))}
                         </div>
                     </div>
+
+                    {allSelectedAlreadyInRemarketing && (
+                        <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 px-3 py-2.5 text-xs text-amber-200">
+                            Estos equipos ya están en <strong>Bodega Remarketing</strong>. Si necesita
+                            enviarlos desde Valorización, abra{' '}
+                            <strong>Inventario → Bodega Valorización (BOD-VAL)</strong>, selecciónelos y
+                            elija destino Remarketing.
+                        </div>
+                    )}
 
                     <div>
                         <label className="block text-xs font-semibold uppercase text-surface-400 mb-2">Bodega Destino</label>

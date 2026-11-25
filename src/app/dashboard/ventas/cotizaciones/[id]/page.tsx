@@ -1,6 +1,6 @@
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
-import { ArrowLeft } from 'lucide-react'
+import { ArrowLeft, Pencil } from 'lucide-react'
 import { getQuotationById, getQuotationComments } from '../actions'
 import QuotationDetailClient from './QuotationDetailClient'
 import QuotationLetterhead from '../components/QuotationLetterhead'
@@ -22,11 +22,8 @@ import {
   QUOTATION_IVA_RATE,
   resolveQuotationTotals,
 } from '@/lib/ventas/quotationIva'
-import {
-  formatQuotationItemGrade,
-  formatQuotationNotesForDisplay,
-} from '@/lib/ventas/printQuotationPdf'
-import { TECHCORPS_LETTERHEAD } from '@/lib/ventas/techcorpsLetterhead'
+import { formatQuotationNotesForDisplay } from '@/lib/ventas/printQuotationPdf'
+import QuotationCertFooter from '../components/QuotationCertFooter'
 import { DEFAULT_WARRANTY_DAYS, formatWarrantyPeriodEs } from '@/lib/ventas/warrantyOptions'
 
 export const dynamic = 'force-dynamic'
@@ -68,14 +65,25 @@ export default async function CotizacionDetallePage({
 
       <QuotationLetterhead className="mb-4" />
 
-      <div className="relative rounded-xl border border-gray-200 dark:border-surface-700 bg-white dark:bg-surface-900 mb-4 overflow-hidden print:shadow-none shadow-sm">
+      <div className="relative flex flex-col rounded-xl border border-gray-200 dark:border-surface-700 bg-white dark:bg-surface-900 mb-4 overflow-hidden print:shadow-none shadow-sm">
         <QuotationWatermark />
-        <div className="relative z-[1] p-4 sm:p-5 min-w-0 overflow-hidden">
+        <div className="relative z-[1] flex flex-1 flex-col min-h-0 p-4 sm:p-5 pb-2 sm:pb-2 min-w-0 overflow-hidden">
           <div className="flex flex-wrap items-start justify-between gap-3 mb-4 pb-3 border-b border-gray-100 dark:border-surface-800">
             <div className="min-w-0 flex-1 pr-2">
-              <h1 className="text-lg font-extrabold text-gray-900 dark:text-white leading-tight">
-                Cotización
-              </h1>
+              <div className="flex flex-wrap items-center gap-2">
+                <h1 className="text-lg font-extrabold text-gray-900 dark:text-white leading-tight">
+                  Cotización
+                </h1>
+                {quotation.status === 'pendiente_aprobacion' && (
+                  <Link
+                    href={`/dashboard/ventas/cotizaciones/${id}/editar`}
+                    className="print:hidden inline-flex items-center gap-1 rounded-lg border border-gray-300 dark:border-surface-600 bg-gray-50 dark:bg-surface-800 px-2.5 py-1 text-xs font-semibold text-gray-800 dark:text-surface-200 hover:border-indigo-400 hover:text-indigo-700 dark:hover:text-indigo-300"
+                  >
+                    <Pencil className="w-3.5 h-3.5" />
+                    Editar
+                  </Link>
+                )}
+              </div>
             </div>
             <div className="flex flex-col items-end gap-1.5 shrink-0">
               <QuotationBarcode quoteNumber={quotation.quote_number} size="md" />
@@ -160,7 +168,6 @@ export default async function CotizacionDetallePage({
                       <tr className="text-[10px] font-bold uppercase tracking-wide text-gray-500 dark:text-surface-400 border-b border-gray-200 dark:border-surface-700 bg-gray-50/80 dark:bg-surface-950/50">
                         <th className="py-2.5 px-2 text-left align-middle">Marca</th>
                         <th className="py-2.5 px-2 text-left align-middle">Modelo</th>
-                        <th className="py-2.5 px-2 text-center align-middle">Grado</th>
                         <th className="py-2.5 px-2 text-center align-middle">Cant.</th>
                         <th className="py-2.5 px-2 text-center align-middle whitespace-nowrap w-[7rem]">Precio</th>
                         <th className="py-2.5 px-2 text-center align-middle whitespace-nowrap w-[7.25rem]">
@@ -180,9 +187,6 @@ export default async function CotizacionDetallePage({
                           <td className="py-2.5 px-2 align-middle text-left text-gray-700 dark:text-surface-300 break-words">
                             {item.model?.trim() || '—'}
                           </td>
-                          <td className="py-2.5 px-2 align-middle text-center text-gray-700 dark:text-surface-300 whitespace-nowrap">
-                            {formatQuotationItemGrade(item.condition)}
-                          </td>
                           <td className="py-2.5 px-2 align-middle text-center tabular-nums font-medium">
                             {item.quantity}
                           </td>
@@ -199,7 +203,7 @@ export default async function CotizacionDetallePage({
                       {iva.discountApplied > 0 ? (
                         <>
                           <tr>
-                            <td colSpan={4} className={TFOOT_SPACER} />
+                            <td colSpan={3} className={TFOOT_SPACER} />
                             <td className={cn(TFOOT_LABEL, 'pt-2 text-gray-500')}>
                               Subtotal equipos (sin IVA)
                             </td>
@@ -208,7 +212,7 @@ export default async function CotizacionDetallePage({
                             </td>
                           </tr>
                           <tr>
-                            <td colSpan={4} className={TFOOT_SPACER} />
+                            <td colSpan={3} className={TFOOT_SPACER} />
                             <td className={cn(TFOOT_LABEL, 'text-red-600')}>
                               <span className="block">Descuento</span>
                               {quotation.discount_note?.trim() ? (
@@ -227,21 +231,21 @@ export default async function CotizacionDetallePage({
                         </>
                       ) : null}
                       <tr>
-                        <td colSpan={4} className={TFOOT_SPACER} />
+                        <td colSpan={3} className={TFOOT_SPACER} />
                         <td className={cn(TFOOT_LABEL, 'pt-2 text-gray-500 dark:text-surface-400')}>
                           Subtotal sin IVA
                         </td>
                         <td className={cn(TFOOT_AMOUNT, 'pt-2 font-medium')}>{formatMoney(iva.subtotal)}</td>
                       </tr>
                       <tr>
-                        <td colSpan={4} className={TFOOT_SPACER} />
+                        <td colSpan={3} className={TFOOT_SPACER} />
                         <td className={cn(TFOOT_LABEL, 'text-gray-500 dark:text-surface-400')}>
                           IVA ({Math.round(QUOTATION_IVA_RATE * 100)}%)
                         </td>
                         <td className={cn(TFOOT_AMOUNT, 'font-medium')}>{formatMoney(iva.tax_amount)}</td>
                       </tr>
                       <tr>
-                        <td colSpan={4} className={TFOOT_SPACER} />
+                        <td colSpan={3} className={TFOOT_SPACER} />
                         <td className={cn(TFOOT_LABEL, 'pb-2 text-sm font-bold text-gray-800 dark:text-white')}>
                           Total con IVA
                         </td>
@@ -261,6 +265,8 @@ export default async function CotizacionDetallePage({
             </div>
           )}
         </div>
+
+        <QuotationCertFooter className="relative z-[1] border-gray-300 dark:border-surface-600 px-0 print:px-0" />
       </div>
 
       <div className="print:hidden">
@@ -271,24 +277,6 @@ export default async function CotizacionDetallePage({
           iva={iva}
         />
       </div>
-
-      <footer className="mt-6 pt-4 border-t border-gray-200 dark:border-surface-700 text-center text-[11px] text-gray-500 dark:text-surface-500 print:mt-4">
-        <p className="font-semibold text-gray-800 dark:text-surface-300">
-          {TECHCORPS_LETTERHEAD.legalName}
-        </p>
-        <p>
-          {TECHCORPS_LETTERHEAD.phonesDisplay}
-          <span className="mx-1.5">·</span>
-          <a
-            href={TECHCORPS_LETTERHEAD.websiteUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-indigo-600 dark:text-indigo-400 hover:underline print:text-gray-700"
-          >
-            {TECHCORPS_LETTERHEAD.websiteDisplay}
-          </a>
-        </p>
-      </footer>
     </div>
   )
 }

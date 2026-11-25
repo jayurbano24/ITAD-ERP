@@ -131,7 +131,6 @@ export function buildQuotationPrintPayload(
     items: (quotation.items ?? []).map((item) => ({
       manufacturer: item.manufacturer?.trim() || '—',
       model: item.model?.trim() || '—',
-      grade: formatQuotationItemGrade(item.condition),
       qty: item.quantity,
       unitPrice: item.unit_price,
       lineTotal: item.line_total,
@@ -164,7 +163,6 @@ export type QuotationPrintPayload = {
   items: Array<{
     manufacturer: string
     model: string
-    grade: string
     qty: number
     unitPrice: number
     lineTotal: number
@@ -203,7 +201,7 @@ const PDF_FOOT_FILL = [255, 255, 255] as const
 type PdfFootCell = string | { content: string; colSpan?: number; styles?: Record<string, unknown> }
 
 /** Pie de tabla: (N−2) cols vacías + etiqueta + monto en las dos últimas columnas. */
-const QUOTATION_TABLE_COLS = 6
+const QUOTATION_TABLE_COLS = 5
 
 function pdfFootAmountRow(
   label: string,
@@ -242,21 +240,20 @@ type LogoAsset = {
   aspect: number
 }
 
-async function loadLogoForPdf(): Promise<LogoAsset | null> {
+async function loadImageAsset(src: string, fallbackAspect = 2): Promise<LogoAsset | null> {
   if (typeof window === 'undefined') return null
-  const src = TECHCORPS_LETTERHEAD.logoPrintSrc || TECHCORPS_LETTERHEAD.logoSrc
   try {
     const img = new Image()
     img.crossOrigin = 'anonymous'
     img.decoding = 'async'
     const loaded = new Promise<void>((resolve, reject) => {
       img.onload = () => resolve()
-      img.onerror = () => reject(new Error('logo load failed'))
+      img.onerror = () => reject(new Error('image load failed'))
     })
     img.src = src
     await loaded
-    const w = img.naturalWidth || 520
-    const h = img.naturalHeight || 284
+    const w = img.naturalWidth || 1200
+    const h = img.naturalHeight || Math.round(w / fallbackAspect)
     const canvas = document.createElement('canvas')
     canvas.width = w
     canvas.height = h
@@ -264,10 +261,7 @@ async function loadLogoForPdf(): Promise<LogoAsset | null> {
     if (!ctx) return null
     ctx.clearRect(0, 0, w, h)
     ctx.drawImage(img, 0, 0, w, h)
-    return {
-      dataUrl: canvas.toDataURL('image/png'),
-      aspect: w / h,
-    }
+    return { dataUrl: canvas.toDataURL('image/png'), aspect: w / h }
   } catch {
     try {
       const res = await fetch(src)
@@ -280,10 +274,84 @@ async function loadLogoForPdf(): Promise<LogoAsset | null> {
         reader.readAsDataURL(blob)
       })
       if (!dataUrl) return null
-      return { dataUrl, aspect: 520 / 284 }
+      return { dataUrl, aspect: fallbackAspect }
     } catch {
       return null
     }
+  }
+}
+
+async function loadLogoForPdf(): Promise<LogoAsset | null> {
+  if (typeof window === 'undefined') return null
+  const src = TECHCORPS_LETTERHEAD.logoPrintSrc || TECHCORPS_LETTERHEAD.logoSrc
+  return loadImageAsset(src, 520 / 284)
+}
+
+function trimImageCanvasWhitespace(canvas: HTMLCanvasElement): LogoAsset | null {
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return null
+  const { width, height } = canvas
+  const data = ctx.getImageData(0, 0, width, height).data
+  let minX = width
+  let minY = height
+  let maxX = 0
+  let maxY = 0
+  const isContentPixel = (i: number) => {
+    const a = data[i + 3]
+    if (a < 12) return false
+    const r = data[i]
+    const g = data[i + 1]
+    const b = data[i + 2]
+    if (r > 248 && g > 248 && b > 248) return false
+    const spread = Math.max(r, g, b) - Math.min(r, g, b)
+    const avg = (r + g + b) / 3
+    // Gutter claro y gris uniforme del PNG del pie (no contenido).
+    if (spread < 10 && avg > 224) return false
+    return true
+  }
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 4
+      if (!isContentPixel(i)) continue
+      minX = Math.min(minX, x)
+      minY = Math.min(minY, y)
+      maxX = Math.max(maxX, x)
+      maxY = Math.max(maxY, y)
+    }
+  }
+  if (maxX < minX || maxY < minY) {
+    return { dataUrl: canvas.toDataURL('image/png'), aspect: width / height }
+  }
+  const cw = maxX - minX + 1
+  const ch = maxY - minY + 1
+  const trimmed = document.createElement('canvas')
+  trimmed.width = cw
+  trimmed.height = ch
+  const tctx = trimmed.getContext('2d')
+  if (!tctx) return null
+  tctx.drawImage(canvas, minX, minY, cw, ch, 0, 0, cw, ch)
+  return { dataUrl: trimmed.toDataURL('image/png'), aspect: cw / ch }
+}
+
+async function loadCertFooterForPdf(): Promise<LogoAsset | null> {
+  const asset = await loadImageAsset(TECHCORPS_LETTERHEAD.certFooterSrc, 1200 / 72)
+  if (!asset || typeof document === 'undefined') return asset
+  try {
+    const img = new Image()
+    await new Promise<void>((resolve, reject) => {
+      img.onload = () => resolve()
+      img.onerror = () => reject(new Error('footer load failed'))
+      img.src = asset.dataUrl
+    })
+    const canvas = document.createElement('canvas')
+    canvas.width = img.naturalWidth
+    canvas.height = img.naturalHeight
+    const ctx = canvas.getContext('2d')
+    if (!ctx) return asset
+    ctx.drawImage(img, 0, 0)
+    return trimImageCanvasWhitespace(canvas) ?? asset
+  } catch {
+    return asset
   }
 }
 
@@ -292,8 +360,33 @@ export function quotationPdfFileName(quoteNumber: string): string {
   return `Cotizacion-${safeNum}.pdf`
 }
 
-function drawPdfFooter(doc: import('jspdf').jsPDF, marginX: number, pageW: number) {
+function drawPdfFooter(
+  doc: import('jspdf').jsPDF,
+  marginX: number,
+  pageW: number,
+  pageNum: number,
+  certFooter: LogoAsset | null,
+  certFooterTopY?: number | null
+) {
   const pageH = doc.internal.pageSize.getHeight()
+
+  if (pageNum === 1 && certFooter) {
+    const x = marginX
+    const fw = pageW - marginX * 2
+    const fh = fw / certFooter.aspect
+    const minY = 4
+    const maxY = pageH - fh - minY
+    const y =
+      certFooterTopY != null
+        ? Math.min(Math.max(certFooterTopY, minY), maxY)
+        : maxY
+    doc.setDrawColor(210, 210, 210)
+    doc.setLineWidth(0.15)
+    doc.line(x, y - 2, pageW - marginX, y - 2)
+    doc.addImage(certFooter.dataUrl, 'PNG', x, y, fw, fh, undefined, 'FAST')
+    return
+  }
+
   const y = pageH - 10
   doc.setDrawColor(200, 200, 200)
   doc.setLineWidth(0.2)
@@ -418,6 +511,7 @@ export async function renderQuotationPdfDocument(
   const contentW = pageW - marginX * 2
 
   const logo = await loadLogoForPdf()
+  const certFooter = await loadCertFooterForPdf()
   await drawWatermark(doc, logo)
 
   let y = 10
@@ -585,11 +679,10 @@ export async function renderQuotationPdfDocument(
     theme: 'plain',
     startY: y,
     tableWidth: contentW,
-    head: [['Marca', 'Modelo', 'Grado', 'Cant.', 'Precio', 'Sub-total']],
+    head: [['Marca', 'Modelo', 'Cant.', 'Precio', 'Sub-total']],
     body: payload.items.map((row) => [
       row.manufacturer,
       row.model,
-      row.grade,
       String(row.qty),
       formatQ(row.unitPrice),
       formatQ(row.lineTotal),
@@ -621,12 +714,11 @@ export async function renderQuotationPdfDocument(
       valign: 'middle',
     },
     columnStyles: {
-      0: { cellWidth: contentW * 0.16, halign: 'left' },
-      1: { cellWidth: contentW * 0.28, halign: 'left' },
+      0: { cellWidth: contentW * 0.2, halign: 'left' },
+      1: { cellWidth: contentW * 0.32, halign: 'left' },
       2: { halign: 'center', cellWidth: contentW * 0.12 },
-      3: { halign: 'center', cellWidth: contentW * 0.1 },
-      4: { halign: 'center', cellWidth: contentW * 0.17 },
-      5: { halign: 'center', cellWidth: contentW * 0.17, fontStyle: 'bold' },
+      3: { halign: 'center', cellWidth: contentW * 0.18 },
+      4: { halign: 'center', cellWidth: contentW * 0.18, fontStyle: 'bold' },
     },
     foot: [
       ...(payload.discountApplied > 0 ?
@@ -653,35 +745,37 @@ export async function renderQuotationPdfDocument(
       fillColor: [255, 255, 255],
       cellPadding: { top: 4, right: 2, bottom: 4, left: 2 },
     },
-    margin: { left: marginX, right: marginX },
+    margin: { left: marginX, right: marginX, bottom: 12 },
   })
 
   const tableEnd = (doc as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY
-  y = (tableEnd ?? y) + 6
+  y = (tableEnd ?? y) + 4
 
   if (payload.notes?.trim()) {
-    y += 6
+    y += 4
     doc.setTextColor(BRAND.r, BRAND.g, BRAND.b)
     doc.setFont('helvetica', 'bold')
     doc.setFontSize(8)
     doc.text('Notas', marginX, y)
-    y += 5
+    y += 4
     doc.setFont('helvetica', 'normal')
     doc.setTextColor(50, 50, 50)
     const notesPdf = formatQuotationNotesForPdf(payload.notes)
-    drawHelveticaMultiline(doc, notesPdf, marginX, y, contentW, {
+    y = drawHelveticaMultiline(doc, notesPdf, marginX, y, contentW, {
       fontSize: 8,
-      lineMm: 3.6,
+      lineMm: 3.4,
       textColor: [50, 50, 50],
     })
   }
+
+  const certFooterTopY = certFooter ? y + 5 : null
 
   appendWarrantyPolicyPageToDocument(doc, buildWarrantyPayloadFromQuotation(payload))
 
   const pageCount = doc.getNumberOfPages()
   for (let p = 1; p <= pageCount; p++) {
     doc.setPage(p)
-    drawPdfFooter(doc, marginX, pageW)
+    drawPdfFooter(doc, marginX, pageW, p, certFooter, certFooterTopY)
   }
 
   return doc

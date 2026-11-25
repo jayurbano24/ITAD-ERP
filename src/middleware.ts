@@ -60,11 +60,19 @@ export async function middleware(request: NextRequest) {
       .single()
 
     if (profile) {
-      // Si el deviceId en la sesión actual no coincide con el de la DB, invalidar
-      if (profile.current_device_id && profile.current_device_id !== deviceId) {
+      const profileDevice = profile.current_device_id || null
+      // Cookie perdida (recarga, otro tab): re-sincronizar sin cerrar sesión
+      if (profileDevice && !deviceId) {
+        supabaseResponse.cookies.set('device-id', profileDevice, {
+          httpOnly: true,
+          secure: process.env.NODE_ENV === 'production',
+          sameSite: 'lax',
+          path: '/',
+          maxAge: 60 * 60 * 24 * 7,
+        })
+      } else if (profileDevice && deviceId && profileDevice !== deviceId) {
         console.warn(`Sesión invalidada para el usuario ${user.id}: ID de dispositivo no coincide.`)
 
-        // Forzar logout
         await supabase.auth.signOut()
 
         const url = request.nextUrl.clone()

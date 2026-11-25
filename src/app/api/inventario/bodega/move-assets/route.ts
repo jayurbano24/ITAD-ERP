@@ -1,4 +1,5 @@
 import { createClient } from '@/lib/supabase/server'
+import { allocateWarehouseTransferCorrelative } from '@/lib/inventario/nextWarehouseTransferCorrelative'
 import { NextResponse } from 'next/server'
 import { setSession } from '@/lib/supabase/session'
 
@@ -53,16 +54,25 @@ export async function POST(request: Request) {
 
         const transferDate = providedTransferDate ? new Date(providedTransferDate).toISOString() : new Date().toISOString()
 
+        const finalCorrelative = await allocateWarehouseTransferCorrelative(supabase)
+
+        const assetUpdate: {
+            current_warehouse_id: string
+            last_transfer_date: string
+            status?: string
+        } = {
+            current_warehouse_id: warehouse.id,
+            last_transfer_date: transferDate,
+        }
+        // Cotización/venta solo listan equipos en BOD-REM con status ready_for_sale (ver ventas/actions.ts).
+        if (destinationWarehouseCode === 'BOD-REM') {
+            assetUpdate.status = 'ready_for_sale'
+        }
+
         // 3. Actualizar assets con fecha de traslado
         const { error: updateError } = await supabase
             .from('assets')
-            .update({
-                current_warehouse_id: warehouse.id,
-                last_transfer_date: transferDate,
-                // Si es bodega de destrucción, podríamos cambiar el status si se requiere
-                // status: destinationWarehouseCode === 'BOD-DES' ? 'ready_to_recycle' : undefined 
-                // Por ahora mantenemos status, solo movemos.
-            })
+            .update(assetUpdate)
             .in('id', assetIds)
 
         if (updateError) {
@@ -82,7 +92,7 @@ export async function POST(request: Request) {
                 transfer_date: transferDate,
                 notes: reason || null,
                 created_by: user?.id || null,
-                reference_number: correlative || null
+                reference_number: finalCorrelative
             }
         })
 
@@ -92,7 +102,6 @@ export async function POST(request: Request) {
 
         if (movementsError) {
             console.error('Error inserting movements:', movementsError)
-            // No fallar el proceso si solo falla el registro de movimientos
         }
 
         // 5. Registrar Audit Log detallado
@@ -104,11 +113,12 @@ export async function POST(request: Request) {
                 description: `Traslado masivo de ${assetIds.length} equipos a ${warehouse.name}`,
                 entityType: 'ASSET',
                 entityId: assetIds[0], // Usamos el primer ID como referencia
-                entityReference: correlative || `TRAS-${new Date().getTime()}`,
+                entityReference: finalCorrelative,
                 additionalData: {
                     asset_count: assetIds.length,
                     reason,
-                    correlative,
+                    correlative: finalCorrelative,
+                    correlative_preview: correlative || null,
                     destination: warehouse.name,
                     warehouse_id: warehouse.id
                 }
@@ -117,7 +127,12 @@ export async function POST(request: Request) {
             console.error('Error recording audit:', auditError)
         }
 
-        return NextResponse.json({ success: true, count: assetIds.length, correlative })
+        return NextResponse.json({
+            success: true,
+            count: assetIds.length,
+            correlative: finalCorrelative,
+            movementsRecorded: !movementsError,
+        })
     } catch (error) {
         console.error('Error interno:', error)
         return NextResponse.json({ error: 'Error interno del servidor' }, { status: 500 })

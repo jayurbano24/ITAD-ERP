@@ -6,7 +6,7 @@ import {
   buildWarrantyPayloadFromSaleOrder,
   type WarrantyPrintPayload,
 } from '@/lib/ventas/printWarrantyPolicy'
-import { computeQuotationTotalsWithDiscount } from '@/lib/ventas/quotationIva'
+import { computePosSaleTotals, computeQuotationTotalsWithDiscount } from '@/lib/ventas/quotationIva'
 import { lookupWithholdingAgent } from '@/lib/fiscal/lookupWithholdingAgent'
 import { normalizeNitForLookup } from '@/lib/fiscal/nitGt'
 import {
@@ -706,10 +706,7 @@ export async function processSale(data: ProcessSaleData) {
     return { success: false, error: 'Agrega equipos o servicios al carrito' }
   }
 
-  const linesSubtotal = roundMoney(
-    data.cartItems.reduce((sum, item) => sum + item.unitPrice, 0)
-  )
-  const saleTotals = computeQuotationTotalsWithDiscount(linesSubtotal, false, {
+  const saleTotals = computePosSaleTotals(data.cartItems, {
     discount_percent: data.discountPercent,
     discount_amount: data.discountAmount,
   })
@@ -1376,8 +1373,11 @@ async function recomputeOrderRefundStatus(
 
   const billable = rows.filter((r) => r.asset_id)
   const refundedCount = billable.filter((r) => r.line_status === 'refunded').length
+  const voidedCount = billable.filter((r) => r.line_status === 'voided').length
   let status: string | null = null
-  if (billable.length > 0 && refundedCount === billable.length) {
+  if (billable.length > 0 && voidedCount === billable.length) {
+    status = 'cancelled'
+  } else if (billable.length > 0 && refundedCount === billable.length) {
     status = 'refunded'
   } else if (refundedCount > 0) {
     status = 'partially_refunded'
@@ -1806,6 +1806,190 @@ export async function refundSaleOrderItem(input: {
   return {
     success: true,
     data: { refundAmount: total, orderId: order.id },
+  }
+}
+
+/**
+ * Anula la venta completa: equipos vuelven a Bodega Remarketing (BOD-REM) listos para reventa.
+ * No registra reembolso monetario (distinto de devolución línea a línea).
+ */
+export async function voidSaleOrder(input: { orderId: string; reason?: string }) {
+  const { requireSuperAdmin } = await import('@/lib/fiscal/requireSuperAdmin')
+  const admin = await requireSuperAdmin()
+  if (!admin.ok) {
+    return { success: false, error: 'Solo Super Admin puede anular ventas' }
+  }
+
+  const supabase = await createClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: 'Usuario no autenticado' }
+
+  const orderId = (input.orderId || '').trim()
+  if (!orderId) return { success: false, error: 'Venta no válida' }
+
+  const reason = (input.reason || '').trim()
+  if (reason.length < 8) {
+    return {
+      success: false,
+      error: 'Indique la razón de la anulación (obligatoria, mínimo 8 caracteres)',
+    }
+  }
+
+  const { data: order, error: orderErr } = await supabase
+    .from('sales_orders')
+    .select('id, status, invoice_number, order_number, internal_notes, refunded_amount')
+    .eq('id', orderId)
+    .single()
+
+  if (orderErr || !order) return { success: false, error: 'Venta no encontrada' }
+  if (['cancelled', 'refunded', 'partially_refunded'].includes(order.status)) {
+    return { success: false, error: 'Esta venta ya está anulada o tiene devoluciones de dinero' }
+  }
+
+  if (Number(order.refunded_amount || 0) > 0) {
+    return {
+      success: false,
+      error:
+        'Esta venta ya tiene devoluciones de dinero registradas. Use «Devolver dinero», no anular.',
+    }
+  }
+
+  const { data: priorRefunds } = await supabase
+    .from('sale_refunds')
+    .select('id')
+    .eq('order_id', orderId)
+    .limit(1)
+
+  if (priorRefunds && priorRefunds.length > 0) {
+    return {
+      success: false,
+      error: 'Hay reembolsos en esta venta. Use «Devolver dinero» para cierres con cobro.',
+    }
+  }
+
+  const { id: remWhId, error: whErr } = await getRemarketingWarehouseId(supabase)
+  if (!remWhId) return { success: false, error: whErr || 'Bodega Remarketing (BOD-REM) no encontrada' }
+
+  const { data: items, error: itemsErr } = await supabase
+    .from('sales_order_items')
+    .select('id, asset_id, serial_number, line_status')
+    .eq('order_id', orderId)
+
+  if (itemsErr) return { success: false, error: itemsErr.message }
+
+  const { data: soldAssets, error: assetsErr } = await supabase
+    .from('assets')
+    .select('id, status, serial_number, specifications, sale_order_id')
+    .eq('sale_order_id', orderId)
+
+  if (assetsErr) return { success: false, error: assetsErr.message }
+
+  const assetIds = new Set<string>()
+  for (const row of items || []) {
+    if (row.line_status === 'active' && row.asset_id) {
+      assetIds.add(row.asset_id as string)
+    }
+  }
+  for (const asset of soldAssets || []) {
+    if (asset.status === 'sold') {
+      assetIds.add(asset.id as string)
+    }
+  }
+
+  const now = new Date().toISOString()
+  const idList = Array.from(assetIds)
+  const returnedSerials: string[] = []
+
+  if (idList.length > 0) {
+    const { data: assetsRows, error: loadErr } = await supabase
+      .from('assets')
+      .select('id, status, serial_number, specifications, sale_order_id')
+      .in('id', idList)
+
+    if (loadErr) return { success: false, error: loadErr.message }
+
+    const updates = await Promise.all(
+      (assetsRows || []).map(async (asset) => {
+        const prevSpecs =
+          asset.specifications && typeof asset.specifications === 'object'
+            ? (asset.specifications as Record<string, unknown>)
+            : {}
+
+        const { error: updErr } = await supabase
+          .from('assets')
+          .update({
+            status: REMARKETING_READY_STATUS,
+            current_warehouse_id: remWhId,
+            sold_to: null,
+            sold_at: null,
+            sold_by: null,
+            sale_order_id: null,
+            warranty_end_date: null,
+            updated_at: now,
+            specifications: {
+              ...prevSpecs,
+              void_sale: true,
+              void_sale_order_id: orderId,
+              void_reason: reason,
+              void_at: now,
+              void_by: user.id,
+              return_warehouse_code: REMARKETING_WAREHOUSE_CODE,
+            },
+          })
+          .eq('id', asset.id)
+
+        return { asset, updErr }
+      })
+    )
+
+    for (const row of updates) {
+      if (row.updErr) {
+        return {
+          success: false,
+          error: `No se pudo devolver el equipo ${row.asset.serial_number || row.asset.id}: ${row.updErr.message}`,
+        }
+      }
+      returnedSerials.push(row.asset.serial_number || '—')
+    }
+  }
+
+  const { error: linesErr } = await supabase
+    .from('sales_order_items')
+    .update({ line_status: 'voided', refunded_at: null })
+    .eq('order_id', orderId)
+    .eq('line_status', 'active')
+
+  if (linesErr) return { success: false, error: linesErr.message }
+
+  const note = `[${new Date().toLocaleString('es-GT')}] ANULACIÓN (sin devolución de dinero) · ${reason}. Equipos a ${REMARKETING_WAREHOUSE_CODE}: ${returnedSerials.length ? returnedSerials.join(', ') : 'sin series'}`
+
+  const { error: orderUpdErr } = await supabase
+    .from('sales_orders')
+    .update({
+      status: 'cancelled',
+      cancelled_reason: reason,
+      cancelled_at: now,
+      internal_notes: appendOrderNote(order.internal_notes, note),
+      updated_at: now,
+    })
+    .eq('id', orderId)
+
+  if (orderUpdErr) return { success: false, error: orderUpdErr.message }
+
+  revalidatePath('/dashboard/ventas')
+  revalidatePath(`/dashboard/ventas/${orderId}`)
+  revalidatePath('/dashboard/inventario')
+  revalidatePath('/dashboard/inventario/bodega')
+
+  return {
+    success: true,
+    data: {
+      orderId,
+      returnedUnits: returnedSerials.length,
+      serials: returnedSerials,
+    },
   }
 }
 

@@ -14,7 +14,12 @@ import ExcelExportButton from './components/ExcelExportButton'
 import RemarketingTabs, { type RemarketingTab } from './components/RemarketingTabs'
 import RepairStageTabs from './components/RepairStageTabs'
 import RepairStageBoard from './components/RepairStageBoard'
-import ProjectCostSummary, { type ProjectCostRow } from './components/ProjectCostSummary'
+import ProjectCostSummary from './components/ProjectCostSummary'
+import {
+  buildRemarketingProjectCostRows,
+  countDistinctProjects,
+} from '@/lib/inventario/remarketingProjectSummary'
+import { resolveAssetHardwareSpecs } from '@/lib/inventario/resolveAssetHardwareSpecs'
 
 type WarehouseFilterParams = {
   grade?: string
@@ -118,23 +123,7 @@ function getOutputClassifications(asset: WarehouseAsset): WorkshopClassification
 }
 
 function getHardwareSpecs(asset: WarehouseAsset): HardwareSpecs {
-  const specs = asset.specifications as any
-  if (!specs || !specs.hardware_specs) return {}
-  const hw = specs.hardware_specs as any
-  return {
-    processor: hw.processor,
-    processor_brand: hw.processor_brand,
-    processor_generation: hw.processor_generation,
-    processor_family: hw.processor_family,
-    ram_capacity: hw.ram_capacity,
-    ram_type: hw.ram_type,
-    disk_capacity: hw.disk_capacity,
-    disk_type: hw.disk_type,
-    keyboard_type: hw.keyboard_type,
-    keyboard_version: hw.keyboard_version,
-    screen_size: hw.screen_size,
-    bios_version: hw.bios_version
-  }
+  return resolveAssetHardwareSpecs(asset.specifications)
 }
 
 function getReceptionNotes(asset: WarehouseAsset): string | undefined {
@@ -160,7 +149,9 @@ export default async function BodegaPage({
       ? 'comprados'
       : tabParam === 'procesados'
         ? 'procesados'
-        : 'venta'
+        : tabParam === 'proyectos'
+          ? 'proyectos'
+          : 'venta'
   const repairTab: RepairStageKey =
     isRepairWarehouse &&
     (tabParam === 'reparacion' || tabParam === 'control_calidad' || tabParam === 'diagnostico')
@@ -190,6 +181,22 @@ export default async function BodegaPage({
   const remPurchasedCount = remAssets.filter((a) => isPurchasedAsset(a)).length
   /** Equipos que ya pasaron recepción/taller/QC (no lote de compra) */
   const remProcessedCount = remAssets.filter((a) => !isPurchasedAsset(a)).length
+  const remProjectCount = countDistinctProjects(remAssets)
+
+  const matchesRemarketingSearch = (asset: WarehouseAsset) => {
+    if (!searchTerm) return true
+    const searchLower = searchTerm.toLowerCase()
+    return [
+      asset.serial_number,
+      asset.manufacturer,
+      asset.model,
+      asset.ticket_code,
+      asset.batch_code,
+      asset.batch_location,
+    ]
+      .filter(Boolean)
+      .some((value) => value!.toLowerCase().includes(searchLower))
+  }
 
   const filteredAssets = allAssets.filter((asset) => {
     if (gradeFilter && asset.condition_grade !== gradeFilter) {
@@ -199,28 +206,27 @@ export default async function BodegaPage({
       return false
     }
     if (isRemarketing) {
+      if (remTab === 'proyectos') return false
       const purchased = isPurchasedAsset(asset)
       if (remTab === 'comprados' && !purchased) return false
       if (remTab === 'procesados' && purchased) return false
       // 'venta': muestra todos los disponibles en BOD-REM (comprados + procesados)
     }
-    if (searchTerm) {
-      const searchLower = searchTerm.toLowerCase()
-      const haystack = [
-        asset.serial_number,
-        asset.manufacturer,
-        asset.model,
-        asset.ticket_code,
-        asset.batch_code,
-        asset.batch_location
-      ]
-        .filter(Boolean)
-        .some((value) => value!.toLowerCase().includes(searchLower))
-
-      if (!haystack) return false
-    }
+    if (!matchesRemarketingSearch(asset)) return false
     return true
   })
+
+  const projectTabAssets = isRemarketing
+    ? remAssets.filter((asset) => {
+        if (gradeFilter && asset.condition_grade !== gradeFilter) return false
+        return matchesRemarketingSearch(asset)
+      })
+    : []
+
+  const projectCostRows =
+    isRemarketing && remTab === 'proyectos'
+      ? buildRemarketingProjectCostRows(projectTabAssets)
+      : []
 
   const enrichedAssets: WarehouseAssetRow[] = filteredAssets.map((asset) => {
     const inputClassifications = getInputClassifications(asset)
@@ -277,47 +283,6 @@ export default async function BodegaPage({
     })
 
   const isGeneralInventory = !warehouseFilter
-  const warehouseSummary = warehouseSections.map((s) => ({
-    code: s.code || 'SIN',
-    name: s.name || warehouseNameMap[s.code || ''] || s.code || 'Sin bodega',
-    count: s.assets.length,
-  }))
-
-  const projectCostRows: ProjectCostRow[] = (() => {
-    if (!isRemarketing) return []
-    const byProject = new Map<string, { units: number; totalCost: number; totalSale: number }>()
-    for (const asset of filteredAssets) {
-      const specs = (asset.specifications ?? null) as Record<string, unknown> | null
-      const projectRaw =
-        specs?.project_number ??
-        specs?.source_order_number ??
-        specs?.invoice_ref ??
-        specs?.project_hash ??
-        null
-      const project =
-        projectRaw != null && String(projectRaw).trim() !== ''
-          ? String(projectRaw).trim()
-          : remTab === 'comprados' || remTab === 'venta'
-            ? 'Sin Project #'
-            : null
-      if (!project) continue
-      const cost = asset.cost_amount != null ? Number(asset.cost_amount) : 0
-      const sale = asset.sales_price != null ? Number(asset.sales_price) : 0
-      const prev = byProject.get(project) || { units: 0, totalCost: 0, totalSale: 0 }
-      prev.units += 1
-      prev.totalCost += Number.isFinite(cost) ? cost : 0
-      prev.totalSale += Number.isFinite(sale) ? sale : 0
-      byProject.set(project, prev)
-    }
-    return Array.from(byProject.entries())
-      .map(([project, v]) => ({
-        project,
-        units: v.units,
-        totalCost: Math.round(v.totalCost * 100) / 100,
-        totalSale: Math.round(v.totalSale * 100) / 100,
-      }))
-      .sort((a, b) => a.project.localeCompare(b.project, 'es', { numeric: true }))
-  })()
 
   const warehouseNameMap: Record<string, string> = {
     'BOD-REC': 'Bodega Recepción',
@@ -326,8 +291,14 @@ export default async function BodegaPage({
     'BOD-REM': 'Bodega Remarketing',
     'BOD-VAL': 'Bodega Valorización',
     'BOD-HARV': 'Bodega Hardvesting',
-    'BOD-DES': 'Bodega Destrucción'
+    'BOD-DES': 'Bodega Destrucción',
   }
+
+  const warehouseSummary = warehouseSections.map((s) => ({
+    code: s.code || 'SIN',
+    name: s.name || warehouseNameMap[s.code || ''] || s.code || 'Sin bodega',
+    count: s.assets.length,
+  }))
 
   const repairRowsForTab =
     repairBoard?.rows.filter((row) => {
@@ -359,7 +330,7 @@ export default async function BodegaPage({
   const excelHref = `/dashboard/inventario/bodega/api/excel${excelParams.toString() ? `?${excelParams.toString()}` : ''}`
 
   return (
-    <div className="p-6 space-y-6 bg-white dark:bg-[#0b0f1a] min-h-screen transition-colors duration-300">
+    <div className="p-6 space-y-6 bg-white dark:bg-[#0b0f1a] min-h-screen min-w-0 max-w-full transition-colors duration-300">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-6 border-b border-gray-100 dark:border-gray-800 pb-6">
         <div>
           <Link
@@ -429,18 +400,13 @@ export default async function BodegaPage({
             forSaleCount={remForSaleCount}
             purchasedCount={remPurchasedCount}
             processedCount={remProcessedCount}
+            projectCount={remProjectCount}
             search={searchTerm}
           />
-          {projectCostRows.length > 0 && (
+          {remTab === 'proyectos' && (
             <ProjectCostSummary
               rows={projectCostRows}
-              title={
-                remTab === 'comprados'
-                  ? 'Total por Project · Equipos comprados'
-                  : remTab === 'procesados'
-                    ? 'Total por Project · Procesados'
-                    : 'Total por Project · Para venta'
-              }
+              title="Total por Project · Bodega Remarketing"
             />
           )}
         </div>
@@ -567,11 +533,12 @@ export default async function BodegaPage({
         </div>
       </form>
 
-      {!isRepairWarehouse && (
+      {!isRepairWarehouse && remTab !== 'proyectos' && (
         <WarehouseAssetTable sections={warehouseSections} unified={isGeneralInventory} />
       )}
 
-      {!isRepairWarehouse && filteredAssets.length === 0 && (
+      {!isRepairWarehouse &&
+        (remTab === 'proyectos' ? projectCostRows.length === 0 : filteredAssets.length === 0) && (
         <div className="bg-gray-50 dark:bg-[#1a1f2e] border-2 border-dashed border-gray-200 dark:border-gray-800 rounded-[3rem] p-20 text-center">
           <div className="w-24 h-24 bg-white dark:bg-[#0f1419] rounded-[2.5rem] flex items-center justify-center mx-auto mb-6 shadow-sm border border-gray-100 dark:border-gray-800">
             <Package className="w-12 h-12 text-gray-300 dark:text-gray-600" />
@@ -581,14 +548,18 @@ export default async function BodegaPage({
               ? 'Sin equipos comprados'
               : remTab === 'procesados'
                 ? 'Sin equipos procesados'
-                : 'No hay equipos para venta'}
+                : remTab === 'proyectos'
+                  ? 'Sin datos por proyecto'
+                  : 'No hay equipos para venta'}
           </h3>
           <p className="text-gray-500 dark:text-gray-400 font-bold text-sm max-w-sm mx-auto leading-relaxed">
             {remTab === 'comprados'
               ? 'Registra un lote arriba (serie + costo c/u) para que aparezcan aquí en Remarketing.'
               : remTab === 'procesados'
                 ? 'Aquí llegan equipos que ya pasaron recepción / taller / QC hacia Remarketing.'
-                : 'Los equipos listos para vender (comprados o ya procesados) aparecerán en esta pestaña.'}
+                : remTab === 'proyectos'
+                  ? 'Cuando haya equipos en Remarketing con Project # (o búsqueda activa), verás aquí el consolidado de costos.'
+                  : 'Los equipos listos para vender (comprados o ya procesados) aparecerán en esta pestaña.'}
           </p>
         </div>
       )}

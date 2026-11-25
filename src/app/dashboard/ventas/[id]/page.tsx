@@ -2,8 +2,11 @@ import Link from 'next/link'
 import { notFound } from 'next/navigation'
 import { ArrowLeft, FileText, ShoppingCart } from 'lucide-react'
 import { getSalesOrderById, getSaleExchangesForOrder, getLatestWarrantyPolicyNumber } from '../actions'
+import { getSaleCancellationReason } from '@/lib/sales/saleCancellationReason'
 import ReprintWarrantyButton from './ReprintWarrantyButton'
 import SalePostSaleActions from './SalePostSaleActions'
+import VoidSaleButton from '../VoidSaleButton'
+import { createClient } from '@/lib/supabase/server'
 
 export const dynamic = 'force-dynamic'
 
@@ -26,6 +29,16 @@ export default async function VentaDetallePage({ params, searchParams }: PagePro
 
   const { data: exchanges } = await getSaleExchangesForOrder(order.id)
   const latestPolicyNumber = await getLatestWarrantyPolicyNumber(order.id)
+
+  const supabase = await createClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+  let canVoidSale = false
+  if (user) {
+    const { data: profile } = await supabase.from('profiles').select('role').eq('id', user.id).single()
+    canVoidSale = profile?.role === 'super_admin'
+  }
 
   const customer = order.customer as {
     commercial_name?: string
@@ -54,6 +67,13 @@ export default async function VentaDetallePage({ params, searchParams }: PagePro
       specifications?: Record<string, unknown> | null
     } | null
   }>
+
+  const cancellationReason = getSaleCancellationReason({
+    status: order.status,
+    cancelled_reason: (order as { cancelled_reason?: string | null }).cancelled_reason,
+    internal_notes: order.internal_notes,
+  })
+  const cancelledAt = (order as { cancelled_at?: string | null }).cancelled_at
 
   const statusLabels: Record<string, string> = {
     draft: 'Borrador',
@@ -86,8 +106,34 @@ export default async function VentaDetallePage({ params, searchParams }: PagePro
             {order.sat_invoice_number ? ` · SAT ${order.sat_invoice_number}` : ''} · Orden {order.order_number}
           </p>
         </div>
-        <ReprintWarrantyButton orderId={order.id} latestPolicyNumber={latestPolicyNumber} />
+        <div className="flex flex-wrap items-center gap-2">
+          {canVoidSale ? (
+            <VoidSaleButton
+              orderId={order.id}
+              orderStatus={order.status}
+              className="h-10 px-4 text-xs"
+            />
+          ) : null}
+          <ReprintWarrantyButton orderId={order.id} latestPolicyNumber={latestPolicyNumber} />
+        </div>
       </div>
+
+      {order.status === 'cancelled' && (
+        <div className="rounded-2xl border border-amber-200 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-500/10 px-5 py-4 space-y-1">
+          <p className="text-[10px] font-black uppercase tracking-widest text-amber-800 dark:text-amber-300">
+            Venta anulada
+          </p>
+          <p className="text-sm font-bold text-gray-900 dark:text-white leading-snug">
+            <span className="text-amber-900 dark:text-amber-200">Razón: </span>
+            {cancellationReason || 'Sin razón registrada'}
+          </p>
+          {cancelledAt ? (
+            <p className="text-[11px] text-amber-800/80 dark:text-amber-300/80">
+              Anulada el {new Date(cancelledAt).toLocaleString('es-GT')}
+            </p>
+          ) : null}
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-1 space-y-4">
@@ -114,8 +160,20 @@ export default async function VentaDetallePage({ params, searchParams }: PagePro
             </div>
             <div className="flex justify-between text-sm">
               <span className="text-gray-500">Estado</span>
-              <span className="font-bold text-emerald-600">{statusLabels[order.status] || order.status}</span>
+              <span
+                className={`font-bold ${order.status === 'cancelled' ? 'text-amber-700 dark:text-amber-400' : 'text-emerald-600'}`}
+              >
+                {statusLabels[order.status] || order.status}
+              </span>
             </div>
+            {order.status === 'cancelled' && cancellationReason ? (
+              <div className="flex flex-col gap-0.5 text-sm">
+                <span className="text-gray-500">Razón de anulación</span>
+                <span className="font-bold text-gray-900 dark:text-white text-xs leading-snug">
+                  {cancellationReason}
+                </span>
+              </div>
+            ) : null}
             {latestPolicyNumber && (
               <div className="flex justify-between text-sm">
                 <span className="text-gray-500">No. política</span>
@@ -238,11 +296,25 @@ export default async function VentaDetallePage({ params, searchParams }: PagePro
               </thead>
               <tbody className="divide-y divide-gray-50 dark:divide-surface-800">
                 {items.map((item) => (
-                  <tr key={item.id} className={item.line_status === 'refunded' ? 'opacity-60' : undefined}>
+                  <tr
+                    key={item.id}
+                    className={
+                      item.line_status === 'refunded' || item.line_status === 'voided'
+                        ? 'opacity-60'
+                        : undefined
+                    }
+                  >
                     <td className="px-4 py-3 font-mono text-emerald-600 font-bold text-xs">
                       {item.serial_number || item.asset?.serial_number || '—'}
                       {item.line_status === 'refunded' && (
-                        <span className="ml-2 text-[9px] font-black uppercase text-red-600">Reembolsado</span>
+                        <span className="ml-2 text-[9px] font-black uppercase text-red-600">
+                          Devolución $
+                        </span>
+                      )}
+                      {item.line_status === 'voided' && (
+                        <span className="ml-2 text-[9px] font-black uppercase text-amber-700">
+                          Anulada
+                        </span>
                       )}
                     </td>
                     <td className="px-4 py-3 font-bold text-gray-900 dark:text-white">

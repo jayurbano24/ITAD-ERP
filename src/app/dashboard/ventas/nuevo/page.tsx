@@ -45,7 +45,7 @@ import WarrantyDaysSelect from '../cotizaciones/components/WarrantyDaysSelect'
 import QuotationDiscountModal, {
   type DiscountFormValue,
 } from '../cotizaciones/components/QuotationDiscountModal'
-import { computeQuotationTotalsWithDiscount } from '@/lib/ventas/quotationIva'
+import { computePosSaleTotals } from '@/lib/ventas/quotationIva'
 import { computeIvaWithholding, netCollectibleTotal } from '@/lib/fiscal/ivaWithholding'
 import { isConsumidorFinalNit } from '@/lib/fiscal/nitGt'
 
@@ -508,11 +508,19 @@ export default function NuevaVentaPage() {
     )
   }
 
-  const linesSubtotal = roundMoney(
-    cart.reduce((sum, item) => sum + item.unitPrice, 0) +
-      serviceLines.reduce((sum, item) => sum + item.unitPrice, 0)
-  )
-  const saleTotals = computeQuotationTotalsWithDiscount(linesSubtotal, false, {
+  const posLines = [
+    ...cart.map((item) => ({
+      unitPrice: item.unitPrice,
+      listedPrice: item.listedPrice,
+      priceIncludesIva: item.priceIncludesIva,
+    })),
+    ...serviceLines.map((item) => ({
+      unitPrice: item.unitPrice,
+      listedPrice: item.listedPrice,
+      priceIncludesIva: item.priceIncludesIva,
+    })),
+  ]
+  const saleTotals = computePosSaleTotals(posLines, {
     discount_percent: discountPercent,
     discount_amount: discountAmount,
   })
@@ -656,6 +664,8 @@ export default function NuevaVentaPage() {
         ...serviceLines.map((svc) => ({
           assetId: null,
           unitPrice: svc.unitPrice,
+          listedPrice: svc.listedPrice,
+          priceIncludesIva: svc.priceIncludesIva,
           description: `Servicio: ${svc.description}`,
           serialNumber: null,
           conditionGrade: null,
